@@ -24,3 +24,17 @@ jobs:
           CRAWLER_CONTACT: ${{ vars.CRAWLER_CONTACT }}
           CRAWLER_BATCH: ${{ vars.CRAWLER_BATCH }}
           CRAWLER_THREADS: ${{ vars.CRAWLER_THREADS }}
+
+  health:
+    needs: crawl
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m jobcrawler.healthcheck --since-minutes 120 --baseline-bytes ${{ vars.CRAWLER_DB_BASELINE }} --gate   # fails the run on any anomaly
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
