@@ -23,7 +23,12 @@ def main(argv=None):
                 total += 1
                 if res is None: err += 1; db.save_failure(cur, row[0], row[5]); continue
                 ok += 1
-                if not a.dry_run: jobs += db.save_result(cur, row[0], row[4], row[5], res, classify, config.MAX_JOBS_PER_COMPANY)
+                if not a.dry_run:
+                    cur.execute("SAVEPOINT p")      # one bad portal must not roll back the whole batch
+                    try: jobs += db.save_result(cur, row[0], row[4], row[5], res, classify, config.MAX_JOBS_PER_COMPANY); cur.execute("RELEASE SAVEPOINT p")
+                    except Exception as e:
+                        cur.execute("ROLLBACK TO SAVEPOINT p"); err += 1; ok -= 1; print(f"portal {row[0]} save failed: {str(e)[:120]}", file=sys.stderr)
+                        db.save_failure(cur, row[0], row[5])
             if a.dry_run: conn.rollback()
     print(f"shard {a.shard}/{a.shards}: portals={total} ok={ok} err={err} jobs_written={jobs} secs={time.time()-t0:.0f}")
 
