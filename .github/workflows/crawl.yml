@@ -1,0 +1,23 @@
+name: crawl
+on:
+  workflow_dispatch:
+  # schedule disabled for now: no secrets set yet and production crawling awaits user approval
+  # schedule:
+  #   - cron: "17 * * * *"      # hourly; worker only claims portals that are due
+concurrency: { group: crawl, cancel-in-progress: false }
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix: { shard: [0, 1, 2, 3] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m jobcrawler.worker --shard ${{ matrix.shard }} --shards 4 --max-batches 20
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}   # repository secret, never committed
+          CRAWLER_CONTACT: ${{ vars.CRAWLER_CONTACT }}
