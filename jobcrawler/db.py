@@ -31,6 +31,8 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
     jobs = res["jobs"][:cap]
     h = hashlib.sha1("|".join(sorted(set(str(j["ext"]) for j in jobs))).encode()).hexdigest()
     if not jobs and res["method"] == "none":
+        # a low-confidence text_list portal that now yields nothing (filters tightened): close its stale rows. Other methods keep theirs (a transient 'none' must not wipe real jobs).
+        cur.execute("UPDATE bridge_job SET closed=true WHERE portal_id=%s AND NOT closed AND EXISTS (SELECT 1 FROM bridge_crawl WHERE portal_id=%s AND method='text_list')", (portal_id, portal_id))
         nxt = now + INTERVAL[3]
         cur.execute("UPDATE bridge_crawl SET method='none', next_check=%s, last_ok=%s, n_jobs=0 WHERE portal_id=%s", (nxt, now, portal_id)); return 0
     rows = []; seen = set()

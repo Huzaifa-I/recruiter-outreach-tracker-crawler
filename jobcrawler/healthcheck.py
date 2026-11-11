@@ -20,10 +20,13 @@ def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
         if secs and secs > MAX_SHARD_SECS: an.append(f"shard {sh} slow: {secs:.0f}s")
         if po and er / po > MAX_ERR_RATE: an.append(f"shard {sh} error rate {er}/{po}")
     if not runs: an.append("no bridge_run rows in window (did the workers run, is sql/004 applied?)")
-    # 2. duplicates: same open url under one portal, or a job_key mismatch
-    d = q("SELECT count(*) FROM (SELECT portal_id, url FROM bridge_job WHERE NOT closed GROUP BY 1,2 HAVING count(*)>1) x")[0][0]
-    info.append(f"duplicate open (portal,url) groups: {d}")
-    if d: an.append(f"{d} duplicate open (portal,url) groups")
+    # 2. exact duplicates. text_list jobs legitimately share the careers-page url, so the key includes the title.
+    d = q("SELECT count(*) FROM (SELECT portal_id, url, title FROM bridge_job WHERE NOT closed GROUP BY 1,2,3 HAVING count(*)>1) x")[0][0]
+    info.append(f"exact duplicate (portal,url,title) groups: {d}")
+    if d: an.append(f"{d} exact duplicate (portal,url,title) groups")
+    big = q("SELECT count(*) FROM bridge_crawl WHERE method='text_list' AND n_jobs > 100")[0][0]
+    info.append(f"text_list portals with >100 jobs: {big}")
+    if big: an.append(f"{big} text_list portals with >100 jobs (likely archive/news junk)")
     # 3. fail counts
     f = q("SELECT count(*) FILTER (WHERE fail_count>=3), count(*) FILTER (WHERE fail_count>=5), count(*) FROM bridge_crawl")[0]
     info.append(f"portals={f[2]} fail>=3: {f[0]} dead(fail>=5): {f[1]}")

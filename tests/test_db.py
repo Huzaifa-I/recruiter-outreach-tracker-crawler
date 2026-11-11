@@ -87,8 +87,43 @@ class HealthTests(unittest.TestCase):
         cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,10,100,100,0,2,'ok'),(1,2,10,100,50,50,0,'failed')")
         cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',1,'t','u',now(),now(),now()),('c',7,'t','u2',now(),now(),now())")
         info, an = healthcheck.checks(cur, gate=True); text = " | ".join(an)
-        self.assertIn("shard 1 status=failed", text); self.assertIn("duplicate open", text); self.assertIn("without a bridge_crawl row", text); self.assertIn("ramp gate failed", text)
+        self.assertIn("shard 1 status=failed", text); self.assertIn("exact duplicate", text); self.assertIn("without a bridge_crawl row", text); self.assertIn("ramp gate failed", text)
         cur.execute("DELETE FROM bridge_run WHERE shard=1"); cur.execute("DELETE FROM bridge_job WHERE job_key IN ('b','c')")
         cur.execute("UPDATE bridge_crawl SET n_jobs=1")
         info, an = healthcheck.checks(cur, gate=True); self.assertEqual(an, [], an); self.assertTrue(any("PASS" in i for i in info))
+if __name__ == "__main__": unittest.main()
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class DupCheckTests(unittest.TestCase):
+    def test_same_url_distinct_titles_pass_exact_dup_fails(self):
+        from jobcrawler import healthcheck
+        srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        ins = "INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES (%s,1,%s,'https://a/careers',now(),now(),now())"
+        cur.execute(ins, ("k1", "Analyst")); cur.execute(ins, ("k2", "Designer"))
+        _, an = healthcheck.checks(cur); self.assertFalse([x for x in an if "duplicate" in x])
+        cur.execute(ins, ("k3", "Analyst"))
+        _, an = healthcheck.checks(cur); self.assertTrue([x for x in an if "exact duplicate (portal,url,title)" in x])
+
+class TextListTests(unittest.TestCase):
+    def test_archive_and_long_lists_filtered(self):
+        from jobcrawler.textlist import parse_text_list
+        arch = "".join(f"<li>Research Analyst Complaint {m} 2024</li>" for m in ("January","February","March","April","May","June"))
+        good = "<li>Product Manager</li><li>Senior Engineer</li><li>Sales Executive</li>"
+        self.assertEqual(parse_text_list("<body>" + arch + "</body>"), [])
+        self.assertEqual(parse_text_list("<body>" + arch + good + "</body>"), ["Product Manager", "Senior Engineer", "Sales Executive"])
+        many = "".join(f"<li>Sales Executive Team{chr(97+i%26)}{chr(97+i//26)}</li>" for i in range(80))
+        self.assertEqual(parse_text_list("<body>" + many + "</body>"), [])
+if __name__ == "__main__": unittest.main()
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class TextListCloseTests(unittest.TestCase):
+    def test_text_list_none_closes_stale_rows_others_kept(self):
+        srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        cur.execute("INSERT INTO bridge_crawl (portal_id,career_url,method) VALUES (1,'x','text_list'),(2,'y','sitemap')")
+        cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',2,'t','u',now(),now(),now())")
+        none = dict(method="none", confidence=0, jobs=[])
+        db.save_result(cur, 1, 3, 0, none, classify, 100); db.save_result(cur, 2, 3, 0, none, classify, 100)
+        cur.execute("SELECT job_key, closed FROM bridge_job ORDER BY 1"); self.assertEqual(cur.fetchall(), [("a", True), ("b", False)])
 if __name__ == "__main__": unittest.main()
