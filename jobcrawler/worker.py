@@ -45,16 +45,36 @@ def write_results(results, dry_run=False):
     finally: conn.close()
     return ok, err, jobs
 
+def log_run(shard, shards, secs, portals, ok, err, jobs, status, run_id=None):
+    """Best effort: a logging failure never fails the crawl."""
+    try:
+        conn = db.connect()
+        with conn, conn.cursor() as cur:
+            if run_id is None:
+                cur.execute("INSERT INTO bridge_run (shard,shards,status) VALUES (%s,%s,'running') RETURNING id", (shard, shards)); return cur.fetchone()[0]
+            cur.execute("UPDATE bridge_run SET secs=%s,portals=%s,ok=%s,err=%s,jobs=%s,status=%s WHERE id=%s", (secs, portals, ok, err, jobs, status, run_id))
+        conn.close()
+    except Exception as e: print(f"run log skipped: {str(e)[:100]}", file=sys.stderr)
+
 def main(argv=None):
     ap = argparse.ArgumentParser(); ap.add_argument("--shard", type=int, default=0); ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--max-batches", type=int, default=1); ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv); total = ok = err = jobs = 0; t0 = time.time()
+    rid = None if a.dry_run else log_run(a.shard, a.shards, 0, 0, 0, 0, 0, 'running')
+    locals_ = dict(total=0, ok=0, err=0, jobs=0)
+    try: _loop(a, locals_, t0)
+    except BaseException:
+        if rid: log_run(a.shard, a.shards, time.time() - t0, locals_['total'], locals_['ok'], locals_['err'], locals_['jobs'], 'failed', rid)
+        raise
+    L = locals_; print(f"shard {a.shard}/{a.shards}: portals={L['total']} ok={L['ok']} err={L['err']} jobs_written={L['jobs']} secs={time.time()-t0:.0f}")
+    if rid: log_run(a.shard, a.shards, time.time() - t0, L['total'], L['ok'], L['err'], L['jobs'], 'ok', rid)
+
+def _loop(a, L, t0):
     for _ in range(a.max_batches):
         rows = claim_and_lease(config.BATCH, a.shard, a.shards)
         if not rows: break
         with cf.ThreadPoolExecutor(config.THREADS) as ex: results = list(ex.map(crawl, rows))
         o, e, j = write_results(results, a.dry_run)
-        total += len(rows); ok += o; err += e; jobs += j
-    print(f"shard {a.shard}/{a.shards}: portals={total} ok={ok} err={err} jobs_written={jobs} secs={time.time()-t0:.0f}")
+        L['total'] += len(rows); L['ok'] += o; L['err'] += e; L['jobs'] += j
 
 if __name__ == "__main__": main()

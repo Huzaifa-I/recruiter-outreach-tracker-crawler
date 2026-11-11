@@ -1,0 +1,68 @@
+"""Post-run checklist. Read-only. python -m jobcrawler.healthcheck [--since-minutes 120] [--baseline-bytes N] [--gate]
+Prints a short summary plus ANOMALY lines; exit code 1 if any anomaly (so a workflow step can fail loudly).
+--gate also evaluates the staged-ramp gate: OK to scale only if the last run per shard is clean."""
+import argparse, sys
+from . import db
+
+MAX_ERR_RATE = 0.05          # ramp gate: at most 5% of portals may error
+MAX_SHARD_SECS = 40 * 60     # a shard must finish well inside the 50 min workflow limit
+DB_LIMIT_BYTES = 1_000_000_000   # Neon free project cap, warn at 50%
+
+def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
+    an, info = [], []
+    q = lambda sql, *a: (cur.execute(sql, a or None), cur.fetchall())[1]
+    # 1. per-shard time and conclusion
+    runs = q("""SELECT shard, shards, status, secs, portals, ok, err, jobs, started FROM bridge_run
+                WHERE started > now() - %s * interval '1 minute' ORDER BY started""", since_minutes)
+    for sh, shs, st, secs, po, ok, er, jb, started in runs:
+        info.append(f"shard {sh}/{shs}: {st} {secs or 0:.0f}s portals={po} ok={ok} err={er} jobs={jb}")
+        if st != "ok": an.append(f"shard {sh} status={st}")
+        if secs and secs > MAX_SHARD_SECS: an.append(f"shard {sh} slow: {secs:.0f}s")
+        if po and er / po > MAX_ERR_RATE: an.append(f"shard {sh} error rate {er}/{po}")
+    if not runs: an.append("no bridge_run rows in window (did the workers run, is sql/004 applied?)")
+    # 2. duplicates: same open url under one portal, or a job_key mismatch
+    d = q("SELECT count(*) FROM (SELECT portal_id, url FROM bridge_job WHERE NOT closed GROUP BY 1,2 HAVING count(*)>1) x")[0][0]
+    info.append(f"duplicate open (portal,url) groups: {d}")
+    if d: an.append(f"{d} duplicate open (portal,url) groups")
+    # 3. fail counts
+    f = q("SELECT count(*) FILTER (WHERE fail_count>=3), count(*) FILTER (WHERE fail_count>=5), count(*) FROM bridge_crawl")[0]
+    info.append(f"portals={f[2]} fail>=3: {f[0]} dead(fail>=5): {f[1]}")
+    if f[2] and f[0] / f[2] > 0.10: an.append(f"{f[0]} of {f[2]} portals have fail_count>=3")
+    # 4. count consistency (also catches partial writes)
+    bad = q("""SELECT count(*) FROM bridge_crawl c LEFT JOIN (SELECT portal_id, count(*) n FROM bridge_job WHERE NOT closed GROUP BY 1) j USING (portal_id)
+               WHERE c.last_ok IS NOT NULL AND c.method IS DISTINCT FROM 'none' AND coalesce(c.n_jobs,0) <> coalesce(j.n,0)""")[0][0]
+    orph = q("SELECT count(*) FROM bridge_job j WHERE NOT EXISTS (SELECT 1 FROM bridge_crawl c WHERE c.portal_id=j.portal_id)")[0][0]
+    info.append(f"bridge_crawl.n_jobs mismatches: {bad}, orphan jobs: {orph}")
+    if bad: an.append(f"{bad} portals where n_jobs != open job rows (partial write?)")
+    if orph: an.append(f"{orph} jobs without a bridge_crawl row")
+    # 5. running shards (an in-flight lease is expected only while one is running)
+    running = q("SELECT count(*) FROM bridge_run WHERE status='running' AND started > now() - interval '60 minutes'")[0][0]
+    info.append(f"running shards: {running}")
+    # 6. DB growth
+    size = q("SELECT pg_database_size(current_database())")[0][0]
+    tb = q("SELECT relname, pg_total_relation_size(oid) FROM pg_class WHERE relname IN ('bridge_job','bridge_crawl','bridge_seen','bridge_run') AND relkind='r' ORDER BY 2 DESC")
+    info.append(f"db size {size/1e6:.0f} MB; " + ", ".join(f"{n}={s/1e6:.1f}MB" for n, s in tb))
+    if size > DB_LIMIT_BYTES * 0.5: an.append(f"db size {size/1e6:.0f} MB is over 50% of the 1 GB free cap")
+    if baseline_bytes and size - baseline_bytes > 0.1 * DB_LIMIT_BYTES: an.append(f"db grew {(size-baseline_bytes)/1e6:.0f} MB since baseline")
+    # 7. connection health
+    idle = q("SELECT count(*) FROM pg_stat_activity WHERE state LIKE 'idle in transaction%' AND datname=current_database() AND pid<>pg_backend_pid()")[0][0]
+    info.append(f"idle-in-transaction sessions: {idle}")
+    if idle and not running: an.append(f"{idle} idle-in-transaction sessions with no shard running")
+    # 8. ramp gate
+    if gate:
+        bad_runs = [r for r in runs if r[2] != "ok"]
+        tot = sum(r[4] or 0 for r in runs); er = sum(r[6] or 0 for r in runs)
+        okgate = bool(runs) and not bad_runs and not an and (tot == 0 or er / tot <= MAX_ERR_RATE)
+        info.append(f"RAMP GATE: {'PASS, safe to scale' if okgate else 'FAIL, do not scale'} (portals={tot}, errors={er})")
+        if not okgate: an.append("ramp gate failed")
+    return info, an
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(); ap.add_argument("--since-minutes", type=int, default=120)
+    ap.add_argument("--baseline-bytes", type=int); ap.add_argument("--gate", action="store_true")
+    a = ap.parse_args(argv); conn = db.connect(); conn.set_session(readonly=True, autocommit=True)
+    info, an = checks(conn.cursor(), a.since_minutes, a.baseline_bytes, a.gate)
+    print("\n".join(info)); print("\n".join("ANOMALY: " + x for x in an) if an else "no anomalies")
+    sys.exit(1 if an else 0)
+
+if __name__ == "__main__": main()

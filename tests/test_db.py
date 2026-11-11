@@ -76,3 +76,19 @@ class LeaseTests(unittest.TestCase):
         cur.execute("SELECT portal_id, next_check > now() + interval '20 hours', fail_count FROM bridge_crawl ORDER BY portal_id"); r = cur.fetchall()
         self.assertTrue(r[0][1] and r[2][1]); self.assertEqual(r[1][2], 1)   # real next_check (daily) replaced the 15 min lease
 if __name__ == "__main__": unittest.main()
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class HealthTests(unittest.TestCase):
+    def test_healthcheck_detects_anomalies(self):
+        from jobcrawler import healthcheck
+        srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        cur.execute("INSERT INTO bridge_crawl (portal_id,career_url,last_ok,method,n_jobs) VALUES (1,'x',now(),'sitemap',2)")
+        cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,10,100,100,0,2,'ok'),(1,2,10,100,50,50,0,'failed')")
+        cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',1,'t','u',now(),now(),now()),('c',7,'t','u2',now(),now(),now())")
+        info, an = healthcheck.checks(cur, gate=True); text = " | ".join(an)
+        self.assertIn("shard 1 status=failed", text); self.assertIn("duplicate open", text); self.assertIn("without a bridge_crawl row", text); self.assertIn("ramp gate failed", text)
+        cur.execute("DELETE FROM bridge_run WHERE shard=1"); cur.execute("DELETE FROM bridge_job WHERE job_key IN ('b','c')")
+        cur.execute("UPDATE bridge_crawl SET n_jobs=1")
+        info, an = healthcheck.checks(cur, gate=True); self.assertEqual(an, [], an); self.assertTrue(any("PASS" in i for i in info))
+if __name__ == "__main__": unittest.main()
