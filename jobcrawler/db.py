@@ -5,7 +5,7 @@ from .dates import parse_posted
 
 def connect():
     if not config.DATABASE_URL: raise SystemExit("DATABASE_URL is not set")
-    return psycopg2.connect(config.DATABASE_URL, connect_timeout=15)
+    return psycopg2.connect(config.DATABASE_URL, connect_timeout=15, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
 
 def job_key(portal_id, ext): return hashlib.sha1(f"{portal_id}|{ext}".encode()).hexdigest()[:20]
 
@@ -16,6 +16,13 @@ def claim_due(cur, n, shard, shards):
       WHERE next_check <= now() AND fail_count < 5 AND portal_id %% %s = %s
       ORDER BY tier, next_check LIMIT %s FOR UPDATE SKIP LOCKED""", (shards, shard, n))
     return cur.fetchall()
+
+LEASE_MINUTES = 15
+
+def lease(cur, ids, minutes=LEASE_MINUTES):
+    """Push next_check out so claimed rows are not claimable by another worker while we crawl without a transaction.
+    A crashed worker's rows become due again after the lease. save_result/save_failure overwrite it."""
+    if ids: cur.execute("UPDATE bridge_crawl SET next_check = now() + %s WHERE portal_id = ANY(%s)", (dt.timedelta(minutes=minutes), list(ids)))
 
 INTERVAL = {1: dt.timedelta(hours=1), 2: dt.timedelta(days=1), 3: dt.timedelta(days=7)}
 
