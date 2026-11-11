@@ -5,20 +5,26 @@ import argparse, sys
 from . import db
 
 MAX_ERR_RATE = 0.05          # ramp gate: at most 5% of portals may error
+STALE_RUNNING_MIN = 120     # a 'running' row older than this (job timeout is 110 min) was killed: interrupted
 MAX_SHARD_SECS = 40 * 60     # a shard must finish well inside the 50 min workflow limit
 DB_LIMIT_BYTES = 1_000_000_000   # Neon free project cap, warn at 50%
 
 def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
-    an, info = [], []
+    an, info, warn = [], [], []
     q = lambda sql, *a: (cur.execute(sql, a or None), cur.fetchall())[1]
     # 1. per-shard time and conclusion
-    runs = q("""SELECT shard, shards, status, secs, portals, ok, err, jobs, started FROM bridge_run
-                WHERE started > now() - %s * interval '1 minute' ORDER BY started""", since_minutes)
+    runs = q("""SELECT shard, shards,
+                CASE WHEN status='running' AND started < now() - %s * interval '1 minute' THEN 'interrupted' ELSE status END,
+                secs, portals, ok, err, jobs, started FROM bridge_run
+                WHERE started > now() - %s * interval '1 minute' ORDER BY started""", STALE_RUNNING_MIN, since_minutes)
     for sh, shs, st, secs, po, ok, er, jb, started in runs:
         info.append(f"shard {sh}/{shs}: {st} {secs or 0:.0f}s portals={po} ok={ok} err={er} jobs={jb}")
-        if st != "ok": an.append(f"shard {sh} status={st}")
+        if st == "interrupted": warn.append(f"shard {sh} interrupted (cancelled or timed out); its unfinished portals stay leased 15 min, then are due again")
+        elif st == "running": pass            # still in flight
+        elif st != "ok": an.append(f"shard {sh} status={st}")
         if secs and secs > MAX_SHARD_SECS: an.append(f"shard {sh} slow: {secs:.0f}s")
         if po and er / po > MAX_ERR_RATE: an.append(f"shard {sh} error rate {er}/{po}")
+    if runs and all(r[2] == "interrupted" for r in runs): an.append("every shard in the window was interrupted, nothing completed")
     if not runs: an.append("no bridge_run rows in window (did the workers run, is sql/004 applied?)")
     # 2. exact duplicates. text_list jobs legitimately share the careers-page url, so the key includes the title.
     d = q("SELECT count(*) FROM (SELECT portal_id, url, title FROM bridge_job WHERE NOT closed GROUP BY 1,2,3 HAVING count(*)>1) x")[0][0]
@@ -53,11 +59,13 @@ def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
     if idle and not running: an.append(f"{idle} idle-in-transaction sessions with no shard running")
     # 8. ramp gate
     if gate:
-        bad_runs = [r for r in runs if r[2] != "ok"]
+        bad_runs = [r for r in runs if r[2] not in ("ok", "interrupted")]
         tot = sum(r[4] or 0 for r in runs); er = sum(r[6] or 0 for r in runs)
-        okgate = bool(runs) and not bad_runs and not an and (tot == 0 or er / tot <= MAX_ERR_RATE)
+        done = sum(r[4] or 0 for r in runs if r[2] == "ok")
+        okgate = done > 0 and not bad_runs and not an and (tot == 0 or er / tot <= MAX_ERR_RATE)   # interrupted shards warn but do not fail the gate
         info.append(f"RAMP GATE: {'PASS, safe to scale' if okgate else 'FAIL, do not scale'} (portals={tot}, errors={er})")
         if not okgate: an.append("ramp gate failed")
+    info += ["WARNING: " + w for w in warn]
     return info, an
 
 def main(argv=None):

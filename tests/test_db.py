@@ -127,3 +127,39 @@ class TextListCloseTests(unittest.TestCase):
         db.save_result(cur, 1, 3, 0, none, classify, 100); db.save_result(cur, 2, 3, 0, none, classify, 100)
         cur.execute("SELECT job_key, closed FROM bridge_job ORDER BY 1"); self.assertEqual(cur.fetchall(), [("a", True), ("b", False)])
 if __name__ == "__main__": unittest.main()
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class InterruptedTests(unittest.TestCase):
+    def setUp(self):
+        from jobcrawler import healthcheck
+        self.hc = healthcheck
+        srv = pgserver.get_server(tempfile.mkdtemp()); self.uri = srv.get_uri(); self.c = psycopg2.connect(self.uri); self.c.autocommit = True; self.cur = self.c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
+    def test_stale_running_is_warning_not_anomaly(self):
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,3,100,300,300,0,50,'ok')")
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,started,status) VALUES (1,3,now()-interval '70 minutes','running'),(2,3,now()-interval '70 minutes','running')")
+        info, an = self.hc.checks(self.cur, since_minutes=180, gate=True)
+        self.assertEqual(an, [], an); self.assertTrue(any("WARNING" in i and "interrupted" in i for i in info)); self.assertTrue(any("PASS" in i for i in info))
+    def test_fresh_running_is_not_interrupted_and_all_interrupted_fails(self):
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,status) VALUES (0,1,'running')")
+        info, an = self.hc.checks(self.cur, gate=False); self.assertEqual(an, [], an); self.assertFalse(any("interrupted" in i for i in info))
+        self.cur.execute("UPDATE bridge_run SET started=now()-interval '90 minutes'")
+        info, an = self.hc.checks(self.cur, since_minutes=180, gate=True); self.assertTrue(any("every shard" in x for x in an))
+    def test_failed_still_anomaly(self):
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,status) VALUES (0,1,5,10,5,5,'failed')")
+        _, an = self.hc.checks(self.cur); self.assertTrue(any("status=failed" in x for x in an))
+    def test_sigterm_marks_run_interrupted(self):
+        import subprocess, sys, time, threading, http.server, signal as sg
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self): time.sleep(30)
+            def log_message(self, *a): pass
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,%s)", (f"http://127.0.0.1:{httpd.server_port}/careers",))
+        env = dict(os.environ, DATABASE_URL=self.uri, CRAWLER_CONTACT="test", PYTHONPATH=os.path.join(os.path.dirname(__file__), ".."))
+        p = subprocess.Popen([sys.executable, "-m", "jobcrawler.worker"], env=env, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        for _ in range(50):
+            self.cur.execute("SELECT count(*) FROM bridge_run"); time.sleep(0.2)
+            if self.cur.fetchone()[0]: break
+        time.sleep(1.5); p.send_signal(sg.SIGTERM); p.wait(10); httpd.shutdown()
+        self.cur.execute("SELECT status FROM bridge_run"); self.assertEqual(self.cur.fetchone()[0], "interrupted")
+if __name__ == "__main__": unittest.main()
