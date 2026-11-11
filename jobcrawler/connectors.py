@@ -69,7 +69,7 @@ def workday(url):
     while off < 400:   # first 400 postings; cap protects storage and latency
         s, d = get_json(f"https://{t}.{wd}.myworkdayjobs.com/wday/cxs/{t}/{site}/jobs", data=json.dumps({"appliedFacets": {}, "limit": 20, "offset": off, "searchText": ""}).encode())
         if s != 200 or not d or not d.get("jobPostings"): break
-        out += [dict(ext=j.get("externalPath"), title=j.get("title"), url=f"https://{t}.{wd}.myworkdayjobs.com/{site}{j.get('externalPath','')}", loc=j.get("locationsText", ""), posted=None) for j in d["jobPostings"]]
+        out += [dict(ext=j.get("externalPath"), title=j.get("title"), url=f"https://{t}.{wd}.myworkdayjobs.com/{site}{j.get('externalPath','')}", loc=j.get("locationsText", ""), posted=j.get("postedOn")) for j in d["jobPostings"]]
         off += 20
         if total is None: total = d.get("total", 0)   # Workday only returns total on the first page
         if off >= total: break

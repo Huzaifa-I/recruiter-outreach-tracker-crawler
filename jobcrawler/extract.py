@@ -76,7 +76,8 @@ def sitemap_jobs(base_url):
     good = [u for u in cand if TITLE.search(re.sub(r"[-_/]", " ", u.split("?")[0]))]
     if len(good) >= 3 and len(good) / max(1, len(cand)) >= 0.4:
         return {u: u.rstrip("/").split("/")[-1].split("?")[0].replace("-", " ") for u in good}
-    return {}
+    from .tiers import sitemap_id_jobs
+    return sitemap_id_jobs(urls)
 
 def wp_jobs(base_url, html):
     if "wp-content" not in html: return {}
@@ -139,8 +140,13 @@ def extract(career_url, budget=25.0):
         if jobs: return dict(method="ats:" + ats, ats=ats, ats_token=arg, jobs=jobs, confidence=3)
     ld = jsonld(html)
     if ld: return dict(method="jsonld", ats=None, ats_token=None, jobs=[dict(ext=u, title=t, url=u, loc="", posted=None) for u, t in ld.items()], confidence=2)
-    for name, fn, conf in (("wp_rest", lambda: wp_jobs(final, html), 2), ("rss", lambda: rss_jobs(final, html), 2), ("successfactors", lambda: successfactors(final, html) if re.search(r"/go/[\w-]+/\d+", html) else {}, 3), ("sitemap", lambda: sitemap_jobs(final), 1), ("page_links", lambda: page_links(final, html), 1)):
+    from . import tiers
+    s_ok = s
+    for name, fn, conf in (("keka", lambda: {j["url"]: j["title"] for j in tiers.keka(html)}, 3), ("icims", lambda: {j["url"]: j["title"] for j in tiers.icims_host(html, final)}, 3), ("inline_json", lambda: {j["url"] or j["ext"]: j["title"] for j in tiers.tier1_inline(html)}, 2), ("wp_rest", lambda: wp_jobs(final, html), 2), ("rss", lambda: rss_jobs(final, html), 2), ("successfactors", lambda: successfactors(final, html) if re.search(r"/go/[\w-]+/\d+", html) else {}, 3), ("sitemap", lambda: sitemap_jobs(final), 1), ("page_links", lambda: page_links(final, html), 1), ("hidden_api", lambda: {j["url"] or j["ext"]: j["title"] for j in tiers.tier2_api(final, html)[0]}, 1)):
         if time.time() - t0 > budget: break      # latency budget per company
         g = fn()
         if g: return dict(method=name, ats=None, ats_token=None, jobs=[dict(ext=u, title=t, url=u, loc="", posted=None) for u, t in g.items()], confidence=conf)
-    return dict(method="none", ats=ats, ats_token=None, jobs=[], confidence=0)
+    from .textlist import parse_text_list
+    tl = parse_text_list(html)
+    if tl: return dict(method="text_list", ats=None, ats_token=None, jobs=[dict(ext="t:" + t.lower(), title=t, url=final, loc="", posted=None) for t in tl], confidence=0)
+    return dict(method="none", ats=ats, ats_token=None, jobs=[], confidence=0, diag=dict(status=s_ok, html_len=len(html), final=final, ats=ats))

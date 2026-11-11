@@ -1,6 +1,7 @@
 import hashlib, datetime as dt
 import psycopg2, psycopg2.extras
 from . import config
+from .dates import parse_posted
 
 def connect():
     if not config.DATABASE_URL: raise SystemExit("DATABASE_URL is not set")
@@ -28,7 +29,8 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
     rows = []
     for j in jobs:
         c = classify(j["title"], j["loc"])
-        rows.append((job_key(portal_id, j["ext"]), portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], res["confidence"], now, now, now))
+        sts = parse_posted(j.get("posted"), now) or now
+        rows.append((job_key(portal_id, j["ext"]), portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], res["confidence"], sts, now, now))
     psycopg2.extras.execute_values(cur, """
       INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,confidence,sort_ts,first_seen,last_seen)
       VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false""", rows)
@@ -42,21 +44,30 @@ def save_failure(cur, portal_id, fail):
     back = dt.timedelta(minutes=30 * 2 ** min(fail, 6))
     cur.execute("UPDATE bridge_crawl SET fail_count=fail_count+1, next_check=now()+%s WHERE portal_id=%s", (back, portal_id))
 
-def rematch_user(cur, user_id, role, india, remote, allow_senior):
-    """Profile change: rebuild one user's feed from stored jobs in one statement (no recrawl)."""
-    cur.execute("DELETE FROM bridge_feed WHERE user_id=%s", (user_id,))
-    cur.execute("""INSERT INTO bridge_feed (user_id, job_key, sort_ts)
-      SELECT %s, job_key, sort_ts FROM bridge_job
-      WHERE NOT closed AND role=%s AND (india >= %s OR remote >= %s) AND (%s OR level <> 'senior')
-      ON CONFLICT DO NOTHING""", (user_id, role, int(india), int(remote), allow_senior))
-    return cur.rowcount
+MATCH = """NOT j.closed AND j.role=%(role)s AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
+  AND (j.exp_min IS NULL OR (j.exp_min<=%(exp_max)s))"""
 
-def page_feed(cur, user_id, after=None, limit=50):
-    """Newest first, keyset pagination on (sort_ts, job_key)."""
-    if after:
-        cur.execute("""SELECT j.title,j.url,j.loc,f.sort_ts,f.job_key FROM bridge_feed f JOIN bridge_job j USING (job_key)
-          WHERE f.user_id=%s AND (f.sort_ts, f.job_key) < (%s,%s) ORDER BY f.sort_ts DESC, f.job_key DESC LIMIT %s""", (user_id, after[0], after[1], limit))
-    else:
-        cur.execute("""SELECT j.title,j.url,j.loc,f.sort_ts,f.job_key FROM bridge_feed f JOIN bridge_job j USING (job_key)
-          WHERE f.user_id=%s ORDER BY f.sort_ts DESC, f.job_key DESC LIMIT %s""", (user_id, limit))
+def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4):
+    return dict(role=role, india=int(india), remote=int(remote), senior=allow_senior, exp_max=exp_max)
+
+def page_matches(cur, prof, after=None, limit=50):
+    """Compute-at-read: newest first, keyset on (sort_ts, job_key). A profile change needs no re-match job,
+    the next read already uses the new profile. Unknown experience (NULL exp_min) is shown, never hidden."""
+    q = dict(prof, limit=limit)
+    cond = MATCH
+    if after: cond += " AND (j.sort_ts, j.job_key) < (%(a_ts)s, %(a_key)s)"; q.update(a_ts=after[0], a_key=after[1])
+    cur.execute(f"""SELECT j.title,j.url,j.loc,j.sort_ts,j.job_key,j.first_seen FROM bridge_job j
+      WHERE {cond} ORDER BY j.sort_ts DESC, j.job_key DESC LIMIT %(limit)s""", q)
     return cur.fetchall()
+
+def digest(cur, user_id, prof, limit=50, mark=True):
+    """Batched notification: matches this user has not been told about yet. Links only, never auto-apply.
+    Stores one small row per notified job (bridge_seen), not one per user x job."""
+    q = dict(prof, uid=user_id, limit=limit)
+    cur.execute(f"""SELECT j.title,j.url,j.loc,j.sort_ts,j.job_key FROM bridge_job j
+      WHERE {MATCH} AND NOT EXISTS (SELECT 1 FROM bridge_seen s WHERE s.user_id=%(uid)s AND s.job_key=j.job_key)
+      ORDER BY j.sort_ts DESC, j.job_key DESC LIMIT %(limit)s""", q)
+    rows = cur.fetchall()
+    if mark and rows:
+        psycopg2.extras.execute_values(cur, "INSERT INTO bridge_seen (user_id, job_key) VALUES %s ON CONFLICT DO NOTHING", [(user_id, r[4]) for r in rows])
+    return rows
