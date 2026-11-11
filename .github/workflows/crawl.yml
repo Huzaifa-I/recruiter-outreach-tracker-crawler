@@ -9,7 +9,7 @@ concurrency: { group: crawl, cancel-in-progress: false }
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 110
     strategy:
       fail-fast: false
       matrix: { shard: [0, 1, 2, 3] }
