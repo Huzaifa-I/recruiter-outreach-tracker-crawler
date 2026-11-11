@@ -22,3 +22,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}   # repository secret, never committed
           CRAWLER_CONTACT: ${{ vars.CRAWLER_CONTACT }}
+          CRAWLER_BATCH: ${{ vars.CRAWLER_BATCH }}
+          CRAWLER_THREADS: ${{ vars.CRAWLER_THREADS }}
