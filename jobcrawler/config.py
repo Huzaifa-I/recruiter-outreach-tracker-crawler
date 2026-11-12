@@ -8,3 +8,4 @@ PAGE_TIMEOUT = int(os.environ.get("CRAWLER_TIMEOUT", "8"))
 MAX_JOBS_PER_COMPANY = int(os.environ.get("CRAWLER_MAX_JOBS", "200"))
 PER_HOST_DELAY = float(os.environ.get("CRAWLER_HOST_DELAY", "1.0"))
 USER_AGENT = f"JobCrawler/0.1 (+{CONTACT})" if CONTACT else "JobCrawler/0.1"
+BATCH_MAX_MIN = float(os.environ.get("CRAWLER_BATCH_MAX_MIN", "12"))   # hard wall-time cap per batch; unfinished sites are abandoned with backoff

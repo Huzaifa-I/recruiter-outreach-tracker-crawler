@@ -5,18 +5,21 @@ import argparse, sys
 from . import db
 
 MAX_ERR_RATE = 0.05          # ramp gate: at most 5% of portals may error
-STALE_RUNNING_MIN = 120     # a 'running' row older than this (job timeout is 110 min) was killed: interrupted
-MAX_SHARD_SECS = 40 * 60     # a shard must finish well inside the 50 min workflow limit
+STALE_RUNNING_MIN = 120     # fallback when no heartbeat column (must exceed the 110 min job timeout)
+HEARTBEAT_STALE_MIN = 15    # 'running' with no heartbeat for this long = interrupted
+
+MAX_SHARD_SECS = 100 * 60    # a shard must finish well inside the 110 min workflow limit
 DB_LIMIT_BYTES = 1_000_000_000   # Neon free project cap, warn at 50%
 
 def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
     an, info, warn = [], [], []
     q = lambda sql, *a: (cur.execute(sql, a or None), cur.fetchall())[1]
     # 1. per-shard time and conclusion
+    if not q("SELECT 1 FROM information_schema.columns WHERE table_name='bridge_run' AND column_name='updated_at'"): an.append("sql/005_heartbeat.sql not applied (bridge_run.updated_at missing)"); return info, an
     runs = q("""SELECT shard, shards,
-                CASE WHEN status='running' AND started < now() - %s * interval '1 minute' THEN 'interrupted' ELSE status END,
+                CASE WHEN status='running' AND coalesce(updated_at, started) < now() - %s * interval '1 minute' THEN 'interrupted' ELSE status END,
                 secs, portals, ok, err, jobs, started FROM bridge_run
-                WHERE started > now() - %s * interval '1 minute' ORDER BY started""", STALE_RUNNING_MIN, since_minutes)
+                WHERE started > now() - %s * interval '1 minute' ORDER BY started""", HEARTBEAT_STALE_MIN, since_minutes)
     for sh, shs, st, secs, po, ok, er, jb, started in runs:
         info.append(f"shard {sh}/{shs}: {st} {secs or 0:.0f}s portals={po} ok={ok} err={er} jobs={jb}")
         if st == "interrupted": warn.append(f"shard {sh} interrupted (cancelled or timed out); its unfinished portals stay leased 15 min, then are due again")
@@ -45,7 +48,9 @@ def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
     if bad: an.append(f"{bad} portals where n_jobs != open job rows (partial write?)")
     if orph: an.append(f"{orph} jobs without a bridge_crawl row")
     # 5. running shards (an in-flight lease is expected only while one is running)
-    running = q("SELECT count(*) FROM bridge_run WHERE status='running' AND started > now() - interval '60 minutes'")[0][0]
+    running = q("SELECT count(*) FROM bridge_run WHERE status='running' AND coalesce(updated_at, started) > now() - interval '15 minutes'")[0][0]
+    slow = q("SELECT count(*) FILTER (WHERE slow_count>0), count(*) FILTER (WHERE last_secs>30) FROM bridge_crawl")[0]
+    info.append(f"slow portals: {slow[0]} backed off after timeouts, {slow[1]} last crawl >30s")
     info.append(f"running shards: {running}")
     # 6. DB growth
     size = q("SELECT pg_database_size(current_database())")[0][0]

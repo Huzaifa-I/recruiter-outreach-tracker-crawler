@@ -52,6 +52,14 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
                 (res.get("ats"), res.get("ats_token"), res["method"], res["confidence"], now + INTERVAL[tier], now, h, len(rows), portal_id))
     return len(rows)
 
+def save_timeout(cur, portal_id):
+    """Site did not finish inside the batch cap: back off 1h, 2h, 4h ... up to 7 days. Not a failure (fail_count unchanged)."""
+    cur.execute("""UPDATE bridge_crawl SET slow_count = slow_count + 1,
+        next_check = now() + LEAST(interval '7 days', interval '1 hour' * power(2, LEAST(slow_count, 8))), last_secs = NULL WHERE portal_id=%s""", (portal_id,))
+
+def record_secs(cur, portal_id, secs):
+    cur.execute("UPDATE bridge_crawl SET last_secs=%s, slow_count=CASE WHEN %s < 30 THEN 0 ELSE slow_count END WHERE portal_id=%s", (round(secs, 1), secs, portal_id))
+
 def save_failure(cur, portal_id, fail):
     back = dt.timedelta(minutes=30 * 2 ** min(fail, 6))
     cur.execute("UPDATE bridge_crawl SET fail_count=fail_count+1, next_check=now()+%s WHERE portal_id=%s", (back, portal_id))

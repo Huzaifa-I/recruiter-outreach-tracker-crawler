@@ -82,7 +82,7 @@ class HealthTests(unittest.TestCase):
     def test_healthcheck_detects_anomalies(self):
         from jobcrawler import healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
         cur.execute("INSERT INTO bridge_crawl (portal_id,career_url,last_ok,method,n_jobs) VALUES (1,'x',now(),'sitemap',2)")
         cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,10,100,100,0,2,'ok'),(1,2,10,100,50,50,0,'failed')")
         cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',1,'t','u',now(),now(),now()),('c',7,'t','u2',now(),now(),now())")
@@ -98,7 +98,7 @@ class DupCheckTests(unittest.TestCase):
     def test_same_url_distinct_titles_pass_exact_dup_fails(self):
         from jobcrawler import healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
         ins = "INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES (%s,1,%s,'https://a/careers',now(),now(),now())"
         cur.execute(ins, ("k1", "Analyst")); cur.execute(ins, ("k2", "Designer"))
         _, an = healthcheck.checks(cur); self.assertFalse([x for x in an if "duplicate" in x])
@@ -134,7 +134,7 @@ class InterruptedTests(unittest.TestCase):
         from jobcrawler import healthcheck
         self.hc = healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); self.uri = srv.get_uri(); self.c = psycopg2.connect(self.uri); self.c.autocommit = True; self.cur = self.c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
     def test_stale_running_is_warning_not_anomaly(self):
         self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,3,100,300,300,0,50,'ok')")
         self.cur.execute("INSERT INTO bridge_run (shard,shards,started,status) VALUES (1,3,now()-interval '70 minutes','running'),(2,3,now()-interval '70 minutes','running')")
@@ -162,4 +162,55 @@ class InterruptedTests(unittest.TestCase):
             if self.cur.fetchone()[0]: break
         time.sleep(1.5); p.send_signal(sg.SIGTERM); p.wait(10); httpd.shutdown()
         self.cur.execute("SELECT status FROM bridge_run"); self.assertEqual(self.cur.fetchone()[0], "interrupted")
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class CapAndHeartbeatTests(unittest.TestCase):
+    def setUp(self):
+        from jobcrawler import healthcheck
+        self.hc = healthcheck
+        srv = pgserver.get_server(tempfile.mkdtemp()); self.uri = srv.get_uri(); self.c = psycopg2.connect(self.uri); self.c.autocommit = True; self.cur = self.c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
+    def test_no_heartbeat_for_15_min_is_interrupted_but_recent_heartbeat_is_running(self):
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,5,50,50,0,1,'ok')")
+        self.cur.execute("INSERT INTO bridge_run (shard,shards,started,updated_at,status) VALUES (1,2,now()-interval '30 minutes',now()-interval '20 minutes','running')")
+        info, an = self.hc.checks(self.cur, gate=True); self.assertEqual(an, [], an); self.assertTrue(any("WARNING" in i and "interrupted" in i for i in info))
+        self.cur.execute("UPDATE bridge_run SET updated_at=now()-interval '2 minutes' WHERE shard=1")
+        info, an = self.hc.checks(self.cur); self.assertFalse(any("interrupted" in i for i in info))
+    def test_missing_migration_is_reported(self):
+        self.cur.execute("ALTER TABLE bridge_run DROP COLUMN updated_at")
+        _, an = self.hc.checks(self.cur); self.assertTrue(any("005" in x for x in an))
+    def test_crawl_batch_abandons_slow_sites_at_deadline(self):
+        import time
+        from jobcrawler import worker, config
+        def fake(row):
+            time.sleep(0.05 if row[0] < 3 else 8); return row, dict(method="x", confidence=1, jobs=[]), None, 0.05
+        orig, th = worker.crawl, config.THREADS; worker.crawl = fake; config.THREADS = 4
+        try:
+            rows = [(i, "u", None, None, 2, 0, None) for i in range(1, 6)]; t = time.time()
+            results, timed_out = worker.crawl_batch(rows, time.time() + 1.0)
+        finally: worker.crawl, config.THREADS = orig, th
+        self.assertLess(time.time() - t, 3); self.assertEqual(sorted(r[0][0] for r in results), [1, 2]); self.assertEqual(sorted(r[0] for r in timed_out), [3, 4, 5])
+    def test_timeout_backs_off_and_does_not_count_as_failure(self):
+        from jobcrawler import worker
+        self.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x'),(2,'y')")
+        orig = db.connect; db.connect = lambda: psycopg2.connect(self.uri)
+        try:
+            row = (1, "x", None, None, 2, 0, None)
+            worker.write_results([], timed_out=[row]); worker.write_results([], timed_out=[row])
+        finally: db.connect = orig
+        self.cur.execute("SELECT slow_count, fail_count, next_check > now() + interval '90 minutes' FROM bridge_crawl WHERE portal_id=1"); self.assertEqual(self.cur.fetchone(), (2, 0, True))
+        self.cur.execute("SELECT slow_count FROM bridge_crawl WHERE portal_id=2"); self.assertEqual(self.cur.fetchone()[0], 0)
+    def test_heartbeat_row_updates_while_running(self):
+        import subprocess, sys, time, threading, http.server, signal as sg
+        from jobcrawler import worker
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self): time.sleep(30)
+            def log_message(self, *a): pass
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,%s)", (f"http://127.0.0.1:{httpd.server_port}/careers",))
+        env = dict(os.environ, DATABASE_URL=self.uri, CRAWLER_CONTACT="t", CRAWLER_BATCH_MAX_MIN="0.05", PYTHONPATH=os.path.join(os.path.dirname(__file__), ".."))
+        t = time.time(); p = subprocess.run([sys.executable, "-m", "jobcrawler.worker"], env=env, capture_output=True, text=True, timeout=60); httpd.shutdown()
+        self.assertLess(time.time() - t, 30)     # batch cap (3 s) ended the batch, process exited despite the hung site
+        self.cur.execute("SELECT status, err, updated_at IS NOT NULL FROM bridge_run"); self.assertEqual(self.cur.fetchone(), ("ok", 1, True))
+        self.cur.execute("SELECT slow_count FROM bridge_crawl"); self.assertEqual(self.cur.fetchone()[0], 1)
 if __name__ == "__main__": unittest.main()
