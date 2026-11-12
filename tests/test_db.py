@@ -232,13 +232,13 @@ class ApiDigestTests(unittest.TestCase):
         db.save_result(cls.cur, 1, 2, 0, dict(method="x", confidence=1, jobs=jobs), classify, 100)
     def test_paging_newest_first_no_repeat_and_exp_filter(self):
         from jobcrawler import api
-        p = api.profile_from_user(); cur = None; seen = []; ts = []
+        p = api.profile_from_user("product manager"); cur = None; seen = []; ts = []
         while True:
             r = api.list_jobs(self.cur, p, cur, 4); seen += [i["job_key"] for i in r["items"]]; ts += [i["posted_at"] for i in r["items"]]; cur = r["next_cursor"]
             if not cur: break
         self.assertEqual(len(seen), len(set(seen))); self.assertEqual(ts, sorted(ts, reverse=True))
         self.assertEqual(len(seen), 14)          # 15 odd PM titles minus the 5+ years one (exp_min 5 > 4)
-        self.assertEqual(len(api.list_jobs(self.cur, api.profile_from_user(all_roles=True), None, 100)["items"]), 29)
+        self.assertEqual(len(api.list_jobs(self.cur, api.profile_from_user(None, any_role=True), None, 100)["items"]), 29)
         with self.assertRaises(ValueError): api.list_jobs(self.cur, p, "garbage")
     def test_digest_marks_seen_only_after_successful_send(self):
         from jobcrawler import digest
@@ -248,4 +248,34 @@ class ApiDigestTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): digest.run_for_user(conn, 42, p, bad)
         n = digest.run_for_user(conn, 42, p, lambda u, s, b: sent.append((s, b)), max_items=10); n2 = digest.run_for_user(conn, 42, p, lambda u, s, b: sent.append(1))
         self.assertEqual((n, n2, len(sent)), (14, 0, 1)); self.assertIn("14 new matching jobs", sent[0][0]); self.assertIn("4 more in the app", sent[0][1])
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class RoleSearchTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        srv = pgserver.get_server(tempfile.mkdtemp()); cls.c = psycopg2.connect(srv.get_uri()); cls.c.autocommit = True; cls.cur = cls.c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "006_title_search.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
+        cls.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x')")
+        titles = ["Product Manager", "Associate Product Manager", "Data Analyst", "Senior Data Analyst", "Software Engineer", "100% Sales_Lead", "Data Scientist"]
+        jobs = [dict(ext=str(i), title=t, url=f"u{i}", loc="India", posted=None) for i, t in enumerate(titles)]
+        db.save_result(cls.cur, 1, 2, 0, dict(method="x", confidence=1, jobs=jobs), classify, 100)
+    def titles(self, prof):
+        from jobcrawler import api
+        return sorted(i["title"] for i in api.list_jobs(self.cur, prof, None, 100)["items"])
+    def test_role_search_filters_to_that_role(self):
+        from jobcrawler import api
+        self.assertEqual(self.titles(api.profile_from_user("data analyst")), ["Data Analyst"])           # senior excluded by default
+        self.assertEqual(self.titles(api.profile_from_user("data analyst", allow_senior=True)), ["Data Analyst", "Senior Data Analyst"])
+        self.assertEqual(self.titles(api.profile_from_user(["product manager"])), ["Associate Product Manager", "Product Manager"])
+        self.assertEqual(self.titles(api.profile_from_user(["data analyst", "software engineer"])), ["Data Analyst", "Software Engineer"])
+        self.assertEqual(self.titles(api.profile_from_user("pm")), ["Associate Product Manager", "Product Manager"])
+    def test_no_silent_all_roles(self):
+        from jobcrawler import api
+        for bad in (None, "", [], ["  "]):
+            with self.assertRaises(ValueError): api.profile_from_user(bad)
+        self.assertEqual(len(self.titles(api.profile_from_user(None, any_role=True))), 7 - 1)         # explicit any role: all but the senior one
+    def test_like_wildcards_are_literal(self):
+        from jobcrawler import api
+        self.assertEqual(self.titles(api.profile_from_user("100% sales_lead")), ["100% Sales_Lead"])
+        self.assertEqual(self.titles(api.profile_from_user("%")), ["100% Sales_Lead"])
 if __name__ == "__main__": unittest.main()

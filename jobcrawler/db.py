@@ -64,11 +64,24 @@ def save_failure(cur, portal_id, fail):
     back = dt.timedelta(minutes=30 * 2 ** min(fail, 6))
     cur.execute("UPDATE bridge_crawl SET fail_count=fail_count+1, next_check=now()+%s WHERE portal_id=%s", (back, portal_id))
 
-MATCH = """NOT j.closed AND (%(role)s IS NULL OR j.role=%(role)s) AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
+MATCH = """NOT j.closed AND (%(any_role)s OR j.role = ANY(%(role_keys)s) OR j.title ILIKE ANY(%(role_pats)s))
+  AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
   AND (j.exp_min IS NULL OR (j.exp_min<=%(exp_max)s))"""
 
-def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4):
-    return dict(role=role, india=int(india), remote=int(remote), senior=allow_senior, exp_max=exp_max)
+PM_ALIASES = {"pm", "product manager", "product management", "product owner", "apm", "associate product manager", "product"}
+
+def _like(term):
+    t = term.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{t}%"
+
+def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4, any_role=False):
+    """role: one role search term or a list of them (e.g. "product manager", ["data analyst", "pm"]). A search filters to those roles:
+    each term matches job titles containing it; PM terms also use the classified 'pm' role. There is NO all-roles default:
+    empty roles raise ValueError unless any_role=True is passed explicitly (the user picked 'any role')."""
+    roles = [r for r in ([role] if isinstance(role, str) else (role or [])) if r and r.strip()]
+    if not roles and not any_role: raise ValueError("role search required (pass any_role=True only if the user explicitly chose any role)")
+    keys = ["pm"] if any(r.strip().lower() in PM_ALIASES for r in roles) else []
+    return dict(any_role=bool(any_role), role_keys=keys, role_pats=[_like(r) for r in roles], india=int(india), remote=int(remote), senior=allow_senior, exp_max=exp_max)
 
 def page_matches(cur, prof, after=None, limit=50):
     """Compute-at-read: newest first, keyset on (sort_ts, job_key). A profile change needs no re-match job,

@@ -6,14 +6,15 @@ The crawler writes `bridge_job` (and `bridge_crawl`, `bridge_seen`, `bridge_run`
 Plain functions over a psycopg2 cursor. Wrap them in any route.
 
     from jobcrawler import api
-    prof = api.profile_from_user(role="pm", india=True, remote=True, allow_senior=False, exp_max=4, all_roles=False)
+    prof = api.profile_from_user("product manager", india=True, remote=True, allow_senior=False, exp_max=4)   # or a list of roles
     page = api.list_jobs(cur, prof, cursor=request_cursor, limit=50)
     # page = {"items": [{title, url, location, posted_at, job_key, first_seen}], "next_cursor": "..." | None}
 
 - Newest first by `sort_ts` (the job's posted date when the source gives one, else first crawl time). Keyset pagination on (sort_ts, job_key): no OFFSET, stable while new jobs arrive.
 - A profile change needs no re-match job: the next call uses the new params.
 - Unknown experience (`exp_min` NULL) is shown, never hidden. `exp_min` is only set from explicit title hints ("3+ years", "Fresher").
-- `all_roles=True` is the "show all roles" toggle (default is PM only).
+- Role search: `roles` is the role(s) the user searches or has in their profile (string or list). Only those roles are shown: each term matches job titles containing it, and PM terms ("pm", "product manager", ...) also use the classified `pm` role. There is no all-roles default: empty roles raise ValueError (return HTTP 400). `any_role=True` is only for an explicit "any role" choice.
+- Run `sql/006_title_search.sql` for a trigram index on titles (optional, needs pg_trgm, which Neon has).
 - `api.count_new_since(cur, prof, since)` is a badge counter.
 - Use a read-only database role for the web app (SELECT on bridge_job).
 - Suggested route: `GET /api/jobs?cursor=&limit=50` returning the dict as JSON. Bad cursors raise ValueError, return HTTP 400.
