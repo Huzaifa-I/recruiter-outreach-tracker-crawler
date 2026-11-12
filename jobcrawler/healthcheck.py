@@ -5,10 +5,10 @@ import argparse, sys
 from . import db
 
 MAX_ERR_RATE = 0.05          # ramp gate: at most 5% of portals may error
-STALE_RUNNING_MIN = 120     # fallback when no heartbeat column (must exceed the 110 min job timeout)
+STALE_RUNNING_MIN = 55      # fallback when no heartbeat column
 HEARTBEAT_STALE_MIN = 15    # 'running' with no heartbeat for this long = interrupted
-
-MAX_SHARD_SECS = 100 * 60    # a shard must finish well inside the 110 min workflow limit
+     # a 'running' row older than this (job timeout is 50 min) was killed: interrupted
+MAX_SHARD_SECS = 40 * 60     # a shard must finish well inside the 50 min workflow limit
 DB_LIMIT_BYTES = 1_000_000_000   # Neon free project cap, warn at 50%
 
 def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):

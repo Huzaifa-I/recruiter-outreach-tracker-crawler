@@ -27,10 +27,17 @@ def list_jobs(cur, prof, cursor=None, limit=50):
     after = decode_cursor(cursor) if cursor else None
     rows = db.page_matches(cur, prof, after, limit + 1)          # one extra row tells us whether another page exists
     more = len(rows) > limit; rows = rows[:limit]
-    items = [dict(title=r[0], url=r[1], location=r[2], posted_at=r[3].isoformat(), job_key=r[4], first_seen=r[5].isoformat()) for r in rows]
+    items = [dict(title=r[0], url=r[1], location=r[2], sort_ts=r[3].isoformat(), job_key=r[4], first_seen=r[5].isoformat(), company=r[6], posted_at=r[7].isoformat() if r[7] else None) for r in rows]
     return {"items": items, "next_cursor": encode_cursor(rows[-1][3], rows[-1][4]) if more and rows else None}
 
 def count_new_since(cur, prof, since):
     """Badge counter: matching jobs first seen after `since` (datetime)."""
     cur.execute(f"SELECT count(*) FROM bridge_job j WHERE {db.MATCH} AND j.first_seen > %(since)s", dict(prof, since=since))
     return cur.fetchone()[0]
+
+def get_job(cur, job_key):
+    """Detail view: includes the description (kept out of list pages to keep them small). Returns None if unknown."""
+    cur.execute("SELECT title,url,loc,company,posted_at,first_seen,description,closed FROM bridge_job WHERE job_key=%s", (job_key,))
+    r = cur.fetchone()
+    if not r: return None
+    return dict(title=r[0], url=r[1], location=r[2], company=r[3], posted_at=r[4].isoformat() if r[4] else None, first_seen=r[5].isoformat(), description=r[6], closed=r[7])

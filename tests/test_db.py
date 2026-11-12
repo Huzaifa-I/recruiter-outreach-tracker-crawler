@@ -15,7 +15,7 @@ class DbTests(unittest.TestCase):
     def setUpClass(cls):
         cls.srv = pgserver.get_server(tempfile.mkdtemp())
         cls.conn = psycopg2.connect(cls.srv.get_uri()); cls.conn.autocommit = True; cls.cur = cls.conn.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
         cls.cur.execute("INSERT INTO bridge_crawl (portal_id, career_url) VALUES (1,'x')")
     def res(self, jobs): return dict(method="x", confidence=1, jobs=jobs)
     def test_duplicate_ext_in_one_batch(self):
@@ -40,7 +40,7 @@ class LeaseTests(unittest.TestCase):
     def setUpClass(cls):
         cls.srv = pgserver.get_server(tempfile.mkdtemp()); cls.uri = cls.srv.get_uri()
         c = psycopg2.connect(cls.uri); c.autocommit = True
-        for f in ("001_bridge.sql", "002_compute_at_read.sql"): c.cursor().execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql"): c.cursor().execute(open(os.path.join(SQL, f)).read())
         cls.c = c
     def seed(self, n):
         cur = self.c.cursor(); cur.execute("TRUNCATE bridge_crawl, bridge_job")
@@ -82,7 +82,7 @@ class HealthTests(unittest.TestCase):
     def test_healthcheck_detects_anomalies(self):
         from jobcrawler import healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
         cur.execute("INSERT INTO bridge_crawl (portal_id,career_url,last_ok,method,n_jobs) VALUES (1,'x',now(),'sitemap',2)")
         cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,10,100,100,0,2,'ok'),(1,2,10,100,50,50,0,'failed')")
         cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',1,'t','u',now(),now(),now()),('c',7,'t','u2',now(),now(),now())")
@@ -98,7 +98,7 @@ class DupCheckTests(unittest.TestCase):
     def test_same_url_distinct_titles_pass_exact_dup_fails(self):
         from jobcrawler import healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql", "004_run_log.sql", "005_heartbeat.sql"): cur.execute(open(os.path.join(SQL, f)).read())
         ins = "INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES (%s,1,%s,'https://a/careers',now(),now(),now())"
         cur.execute(ins, ("k1", "Analyst")); cur.execute(ins, ("k2", "Designer"))
         _, an = healthcheck.checks(cur); self.assertFalse([x for x in an if "duplicate" in x])
@@ -120,7 +120,7 @@ if __name__ == "__main__": unittest.main()
 class TextListCloseTests(unittest.TestCase):
     def test_text_list_none_closes_stale_rows_others_kept(self):
         srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql"): cur.execute(open(os.path.join(SQL, f)).read())
         cur.execute("INSERT INTO bridge_crawl (portal_id,career_url,method) VALUES (1,'x','text_list'),(2,'y','sitemap')")
         cur.execute("INSERT INTO bridge_job (job_key,portal_id,title,url,sort_ts,first_seen,last_seen) VALUES ('a',1,'t','u',now(),now(),now()),('b',2,'t','u',now(),now(),now())")
         none = dict(method="none", confidence=0, jobs=[])
@@ -134,7 +134,7 @@ class InterruptedTests(unittest.TestCase):
         from jobcrawler import healthcheck
         self.hc = healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); self.uri = srv.get_uri(); self.c = psycopg2.connect(self.uri); self.c.autocommit = True; self.cur = self.c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
     def test_stale_running_is_warning_not_anomaly(self):
         self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,3,100,300,300,0,50,'ok')")
         self.cur.execute("INSERT INTO bridge_run (shard,shards,started,status) VALUES (1,3,now()-interval '70 minutes','running'),(2,3,now()-interval '70 minutes','running')")
@@ -169,7 +169,7 @@ class CapAndHeartbeatTests(unittest.TestCase):
         from jobcrawler import healthcheck
         self.hc = healthcheck
         srv = pgserver.get_server(tempfile.mkdtemp()); self.uri = srv.get_uri(); self.c = psycopg2.connect(self.uri); self.c.autocommit = True; self.cur = self.c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql", "004_run_log.sql", "005_heartbeat.sql"): self.cur.execute(open(os.path.join(SQL, f)).read())
     def test_no_heartbeat_for_15_min_is_interrupted_but_recent_heartbeat_is_running(self):
         self.cur.execute("INSERT INTO bridge_run (shard,shards,secs,portals,ok,err,jobs,status) VALUES (0,2,5,50,50,0,1,'ok')")
         self.cur.execute("INSERT INTO bridge_run (shard,shards,started,updated_at,status) VALUES (1,2,now()-interval '30 minutes',now()-interval '20 minutes','running')")
@@ -225,7 +225,7 @@ class ApiDigestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         srv = pgserver.get_server(tempfile.mkdtemp()); cls.uri = srv.get_uri(); cls.c = psycopg2.connect(cls.uri); cls.c.autocommit = True; cls.cur = cls.c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
         cls.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x')")
         now = dt.datetime.now(dt.timezone.utc)
         jobs = [dict(ext=str(i), title=("Product Manager (5+ years)" if i == 3 else "Product Manager" if i % 2 else "Engineer"), url=f"u{i}", loc="Bengaluru, India", posted=(now - dt.timedelta(days=i)).isoformat()) for i in range(1, 31)]
@@ -234,7 +234,7 @@ class ApiDigestTests(unittest.TestCase):
         from jobcrawler import api
         p = api.profile_from_user("product manager"); cur = None; seen = []; ts = []
         while True:
-            r = api.list_jobs(self.cur, p, cur, 4); seen += [i["job_key"] for i in r["items"]]; ts += [i["posted_at"] for i in r["items"]]; cur = r["next_cursor"]
+            r = api.list_jobs(self.cur, p, cur, 4); seen += [i["job_key"] for i in r["items"]]; ts += [i["sort_ts"] for i in r["items"]]; cur = r["next_cursor"]
             if not cur: break
         self.assertEqual(len(seen), len(set(seen))); self.assertEqual(ts, sorted(ts, reverse=True))
         self.assertEqual(len(seen), 14)          # 15 odd PM titles minus the 5+ years one (exp_min 5 > 4)
@@ -254,7 +254,7 @@ class RoleSearchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         srv = pgserver.get_server(tempfile.mkdtemp()); cls.c = psycopg2.connect(srv.get_uri()); cls.c.autocommit = True; cls.cur = cls.c.cursor()
-        for f in ("001_bridge.sql", "002_compute_at_read.sql", "006_title_search.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql", "006_title_search.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
         cls.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x')")
         titles = ["Product Manager", "Associate Product Manager", "Data Analyst", "Senior Data Analyst", "Software Engineer", "100% Sales_Lead", "Data Scientist"]
         jobs = [dict(ext=str(i), title=t, url=f"u{i}", loc="India", posted=None) for i, t in enumerate(titles)]
@@ -278,4 +278,43 @@ class RoleSearchTests(unittest.TestCase):
         from jobcrawler import api
         self.assertEqual(self.titles(api.profile_from_user("100% sales_lead")), ["100% Sales_Lead"])
         self.assertEqual(self.titles(api.profile_from_user("%")), ["100% Sales_Lead"])
+
+class TextUtilTests(unittest.TestCase):
+    def test_clean_description(self):
+        from jobcrawler.textutil import clean_description, clean_company
+        gh = "&lt;p&gt;We are hiring a &lt;strong&gt;Product Manager&lt;/strong&gt; to own roadmap &amp;amp; delivery.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;3+ years&lt;/li&gt;&lt;/ul&gt;"
+        d = clean_description(gh); self.assertIn("Product Manager", d); self.assertIn("- 3+ years", d); self.assertNotIn("<", d); self.assertNotIn("&lt;", d)
+        self.assertIsNone(clean_description("Apply now")); self.assertIsNone(clean_description(None)); self.assertIsNone(clean_description(123))
+        long = clean_description("word " * 5000); self.assertLessEqual(len(long), 8003); self.assertTrue(long.endswith("..."))
+        self.assertIn("ok", clean_description("<script>x()</script><p>" + "ok " * 30 + "</p>")); self.assertNotIn("x()", clean_description("<script>x()</script><p>" + "ok " * 30 + "</p>"))
+        self.assertEqual(clean_company({"@type": "Organization", "name": " Acme  Corp "}), "Acme Corp"); self.assertIsNone(clean_company(None))
+    def test_jsonld_jobs_fields(self):
+        from jobcrawler.extract import jsonld_jobs, jsonld
+        h = '<script type="application/ld+json">{"@type":"JobPosting","title":"Product Manager","url":"https://a.com/j/1","datePosted":"2026-11-01","description":"<p>' + "Own the roadmap. " * 5 + '</p>","hiringOrganization":{"@type":"Organization","name":"Acme"},"jobLocation":{"address":{"addressLocality":"Pune","addressCountry":"IN"}}}</script>'
+        j = jsonld_jobs(h)["https://a.com/j/1"]; self.assertEqual((j["posted"], j["company"]["name"], j["loc"]), ("2026-11-01", "Acme", "Pune, IN")); self.assertEqual(list(jsonld(h)), ["https://a.com/j/1"])
+    def test_ats_payload_mapping(self):
+        from jobcrawler import connectors
+        gh = {"jobs": [{"id": 7, "title": "PM", "absolute_url": "u", "location": {"name": "India"}, "first_published": "2026-10-01T00:00:00Z", "content": "&lt;p&gt;" + "Role text. " * 10 + "&lt;/p&gt;", "company_name": "Acme"}]}
+        orig = connectors.get_json; seen = []
+        connectors.get_json = lambda url, data=None: (seen.append(url), (200, gh))[1]
+        try: jobs, s = connectors.greenhouse("acme")
+        finally: connectors.get_json = orig
+        self.assertEqual(len(seen), 1); self.assertIn("content=true", seen[0]); self.assertEqual((jobs[0]["company"], jobs[0]["posted"]), ("Acme", "2026-10-01T00:00:00Z")); self.assertIn("Role text", jobs[0]["description"] if "<" not in jobs[0]["description"] else "Role text")
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class EnrichStoreTests(unittest.TestCase):
+    def test_store_enrichment_and_keep_on_recrawl(self):
+        from jobcrawler import api
+        srv = pgserver.get_server(tempfile.mkdtemp()); c = psycopg2.connect(srv.get_uri()); c.autocommit = True; cur = c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql", "007_enrichment.sql"): cur.execute(open(os.path.join(SQL, f)).read())
+        cur.execute(open(os.path.join(SQL, "007_enrichment.sql")).read())          # idempotent
+        cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x')")
+        j = dict(ext="a", title="Product Manager", url="u", loc="India", posted="2026-10-01T00:00:00Z", description="<p>" + "Own the roadmap. " * 800 + "</p>", company={"name": "Acme"})
+        db.save_result(cur, 1, 2, 0, dict(method="x", confidence=3, jobs=[j]), classify, 100)
+        d = api.get_job(cur, db.job_key(1, "a")); self.assertEqual((d["company"], d["posted_at"][:10]), ("Acme", "2026-10-01")); self.assertLessEqual(len(d["description"]), 8003)
+        j2 = dict(ext="a", title="Product Manager", url="u", loc="India", posted=None, description=None, company=None)     # later crawl without the fields keeps them
+        db.save_result(cur, 1, 2, 0, dict(method="x", confidence=1, jobs=[j2]), classify, 100)
+        d = api.get_job(cur, db.job_key(1, "a")); self.assertEqual((d["company"], d["posted_at"][:10]), ("Acme", "2026-10-01")); self.assertTrue(d["description"])
+        r = api.list_jobs(cur, api.profile_from_user("product manager"), None, 10)["items"][0]; self.assertEqual((r["company"], "description" in r), ("Acme", False))
+        self.assertIsNone(api.get_job(cur, "nope"))
 if __name__ == "__main__": unittest.main()

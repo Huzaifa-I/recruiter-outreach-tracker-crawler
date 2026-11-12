@@ -8,7 +8,9 @@ Plain functions over a psycopg2 cursor. Wrap them in any route.
     from jobcrawler import api
     prof = api.profile_from_user("product manager", india=True, remote=True, allow_senior=False, exp_max=4)   # or a list of roles
     page = api.list_jobs(cur, prof, cursor=request_cursor, limit=50)
-    # page = {"items": [{title, url, location, posted_at, job_key, first_seen}], "next_cursor": "..." | None}
+    # page = {"items": [{title, url, location, sort_ts, posted_at, company, job_key, first_seen}], "next_cursor": "..." | None}
+    # sort_ts = ordering key (posted date, else first crawl). posted_at = the source's real posted date or null. company may be null: fall back to the registry name.
+    job = api.get_job(cur, job_key)   # detail view with the plain-text description (not in list pages)
 
 - Newest first by `sort_ts` (the job's posted date when the source gives one, else first crawl time). Keyset pagination on (sort_ts, job_key): no OFFSET, stable while new jobs arrive.
 - A profile change needs no re-match job: the next call uses the new params.

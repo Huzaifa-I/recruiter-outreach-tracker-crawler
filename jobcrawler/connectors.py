@@ -25,19 +25,19 @@ def detect(text):
     return None, None
 
 def greenhouse(tok):
-    s, d = get_json(f"https://boards-api.greenhouse.io/v1/boards/{tok}/jobs")
+    s, d = get_json(f"https://boards-api.greenhouse.io/v1/boards/{tok}/jobs?content=true")
     if s != 200 or not d: return [], s
-    return [dict(ext=str(j["id"]), title=j["title"], url=j["absolute_url"], loc=(j.get("location") or {}).get("name", ""), posted=j.get("first_published") or j.get("updated_at")) for j in d["jobs"]], s
+    return [dict(ext=str(j["id"]), title=j["title"], url=j["absolute_url"], loc=(j.get("location") or {}).get("name", ""), posted=j.get("first_published") or j.get("updated_at"), description=j.get("content"), company=j.get("company_name")) for j in d["jobs"]], s
 
 def lever(tok):
     s, d = get_json(f"https://api.lever.co/v0/postings/{tok}?mode=json")
     if s != 200 or not isinstance(d, list): return [], s
-    return [dict(ext=j["id"], title=j["text"], url=j["hostedUrl"], loc=(j.get("categories") or {}).get("location") or "", posted=j.get("createdAt")) for j in d], s
+    return [dict(ext=j["id"], title=j["text"], url=j["hostedUrl"], loc=(j.get("categories") or {}).get("location") or "", posted=j.get("createdAt"), description=j.get("descriptionPlain") or j.get("description")) for j in d], s
 
 def ashby(tok):
     s, d = get_json(f"https://api.ashbyhq.com/posting-api/job-board/{tok}")
     if s != 200 or not d: return [], s
-    return [dict(ext=j["id"], title=j["title"], url=j["jobUrl"], loc=j.get("location") or "", posted=j.get("publishedAt")) for j in d.get("jobs", [])], s
+    return [dict(ext=j["id"], title=j["title"], url=j["jobUrl"], loc=j.get("location") or "", posted=j.get("publishedAt"), description=j.get("descriptionPlain") or j.get("descriptionHtml")) for j in d.get("jobs", [])], s
 
 def smartrecruiters(tok):
     out, off, s = [], 0, 200
@@ -46,7 +46,7 @@ def smartrecruiters(tok):
         if s != 200 or not d: break
         for j in d.get("content", []):
             l = j.get("location") or {}
-            out.append(dict(ext=j["id"], title=j["name"], url=f"https://jobs.smartrecruiters.com/{tok}/{j['id']}", loc=", ".join(filter(None, [l.get("city"), l.get("country")])), posted=j.get("releasedDate")))
+            out.append(dict(ext=j["id"], title=j["name"], url=f"https://jobs.smartrecruiters.com/{tok}/{j['id']}", loc=", ".join(filter(None, [l.get("city"), l.get("country")])), posted=j.get("releasedDate"), company=(j.get("company") or {}).get("name") or tok))
         off += 100
         if off >= d.get("totalFound", 0): break
     return out, s
@@ -59,7 +59,7 @@ def workable(tok):
 def recruitee(tok):
     s, d = get_json(f"https://{tok}.recruitee.com/api/offers/")
     if s != 200 or not d: return [], s
-    return [dict(ext=str(j["id"]), title=j["title"], url=j["careers_url"], loc=j.get("location") or "", posted=j.get("published_at")) for j in d.get("offers", [])], s
+    return [dict(ext=str(j["id"]), title=j["title"], url=j["careers_url"], loc=j.get("location") or "", posted=j.get("published_at"), description=j.get("description"), company=j.get("company_name")) for j in d.get("offers", [])], s
 
 def workday(url):
     m = re.search(r"https?://([\w-]+)\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?([\w-]+)", url)
@@ -81,7 +81,7 @@ def oracle(url):
     h, site = m.groups()
     s, d = get_json(f"https://{h}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber={site},limit=50,offset=0")
     if s != 200 or not d or not d.get("items"): return [], s
-    return [dict(ext=str(x["Id"]), title=x["Title"], url=f"https://{h}/hcmUI/CandidateExperience/en/sites/{site}/job/{x['Id']}", loc=x.get("PrimaryLocation", ""), posted=x.get("PostedDate")) for x in d["items"][0].get("requisitionList", [])], s
+    return [dict(ext=str(x["Id"]), title=x["Title"], url=f"https://{h}/hcmUI/CandidateExperience/en/sites/{site}/job/{x['Id']}", loc=x.get("PrimaryLocation", ""), posted=x.get("PostedDate"), description=x.get("ShortDescriptionStr")) for x in d["items"][0].get("requisitionList", [])], s
 
 def zoho(host_url):
     m = re.search(r"https?://([\w-]+)\.zohorecruit\.(com|in|eu)", host_url)

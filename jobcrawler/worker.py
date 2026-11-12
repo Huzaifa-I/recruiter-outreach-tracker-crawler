@@ -1,4 +1,4 @@
-"""python -m jobcrawler.worker --shard 0 --shards 4 [--max-batches 5] [--max-minutes 90]
+"""python -m jobcrawler.worker --shard 0 --shards 4 [--max-batches 5] [--max-minutes 35]
 Three phases per batch, no transaction open while crawling (Neon kills idle-in-transaction connections):
  1. short tx: claim due portals (SKIP LOCKED) and lease them (next_check = now()+15 min), commit
  2. crawl with no open transaction, under a hard wall-time cap; sites still running at the cap are abandoned
@@ -98,7 +98,7 @@ def _atexit():
 def main(argv=None):
     ap = argparse.ArgumentParser(); ap.add_argument("--shard", type=int, default=0); ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--max-batches", type=int, default=1); ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--max-minutes", type=float, default=90, help="stop claiming new batches after this long; the batch in flight is abandoned at max-minutes+10 (fits under the 110 min job timeout)")
+    ap.add_argument("--max-minutes", type=float, default=35, help="stop claiming new batches after this long; the batch in flight is abandoned at max-minutes+10")
     a = ap.parse_args(argv); t0 = time.time(); L = dict(total=0, ok=0, err=0, jobs=0)
     rid = None if a.dry_run else log_run(a.shard, a.shards, 0, 0, 0, 0, 0, 'running')
     STATE.update(a=a, L=L, t0=t0, rid=rid, final=False)

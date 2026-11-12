@@ -7,6 +7,14 @@ from .extract import TITLE, links
 TKEYS = ("title", "jobTitle", "job_title", "postingTitle", "Posting_Title", "position", "designation", "name", "text")
 JOBKEYS = ("location", "locations", "department", "jobId", "job_id", "requisitionId", "applyUrl", "apply_url", "slug", "employmentType", "city", "id")
 
+PKEYS = ("datePosted", "date_posted", "postedDate", "posted_at", "postedOn", "publishedAt", "published_at", "createdAt")
+DKEYS = ("description", "jobDescription", "job_description", "descriptionHtml", "descriptionPlain", "summary")
+CKEYS = ("company", "companyName", "company_name", "hiringOrganization", "organization")
+def _first(x, keys):
+    for k in keys:
+        v = x.get(k)
+        if isinstance(v, (str, int, float, dict)) and v != "": return v
+
 def job_lists(obj, depth=0):
     """Yield lists of dicts that look like job postings: >=2 items, >=60% have a title that contains a job word."""
     if depth > 8: return
@@ -20,7 +28,7 @@ def job_lists(obj, depth=0):
             ts = [tt(x) for x in ds]
             ok = [t for t, x in zip(ts, ds) if t and TITLE.search(t) and any(k in x for k in JOBKEYS)]
             if len(ok) >= 2 and len(ok) >= 0.6 * len(ds):
-                yield [dict(ext=str(x.get("id") or x.get("slug") or t), title=t, url=str(x.get("url") or x.get("applyUrl") or x.get("apply_url") or x.get("absolute_url") or ""), loc=str(x.get("location") or x.get("city") or ""), posted=None) for t, x in zip(ts, ds) if t and TITLE.search(t)]
+                yield [dict(ext=str(x.get("id") or x.get("slug") or t), title=t, url=str(x.get("url") or x.get("applyUrl") or x.get("apply_url") or x.get("absolute_url") or ""), loc=str(x.get("location") or x.get("city") or ""), posted=_first(x, PKEYS), description=_first(x, DKEYS), company=_first(x, CKEYS)) for t, x in zip(ts, ds) if t and TITLE.search(t)]
         for x in obj[:200]: yield from job_lists(x, depth + 1)
     elif isinstance(obj, dict):
         for v in list(obj.values())[:200]: yield from job_lists(v, depth + 1)

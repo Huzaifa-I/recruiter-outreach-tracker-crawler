@@ -2,6 +2,7 @@ import hashlib, datetime as dt
 import psycopg2, psycopg2.extras
 from . import config
 from .dates import parse_posted
+from .textutil import clean_description, clean_company
 
 def connect():
     if not config.DATABASE_URL: raise SystemExit("DATABASE_URL is not set")
@@ -41,11 +42,13 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
         if k in seen: continue        # same ext twice in one result: keep first (ON CONFLICT cannot touch a row twice)
         seen.add(k)
         c = classify(j["title"], j["loc"])
-        sts = parse_posted(j.get("posted"), now) or now
-        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], c["exp_min"], res["confidence"], sts, now, now))
+        pdt = parse_posted(j.get("posted"), now); sts = pdt or now
+        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], c["exp_min"], res["confidence"], sts, now, now, clean_description(j.get("description")), pdt, clean_company(j.get("company"))))
     if rows: psycopg2.extras.execute_values(cur, """
-      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,exp_min,confidence,sort_ts,first_seen,last_seen)
-      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false, exp_min=EXCLUDED.exp_min""", rows)
+      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,exp_min,confidence,sort_ts,first_seen,last_seen,description,posted_at,company)
+      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false, exp_min=EXCLUDED.exp_min,
+        description=CASE WHEN EXCLUDED.description IS NOT NULL AND EXCLUDED.description IS DISTINCT FROM bridge_job.description THEN EXCLUDED.description ELSE bridge_job.description END,   -- unchanged JD keeps the stored value, no new TOAST copy per crawl
+         posted_at=COALESCE(EXCLUDED.posted_at, bridge_job.posted_at), company=COALESCE(EXCLUDED.company, bridge_job.company)""", rows)
     keys = [r[0] for r in rows]
     cur.execute("UPDATE bridge_job SET closed=true WHERE portal_id=%s AND NOT closed AND job_key <> ALL(%s)", (portal_id, keys))
     cur.execute("""UPDATE bridge_crawl SET ats=%s, ats_token=%s, method=%s, confidence=%s, next_check=%s, fail_count=0, last_ok=%s, job_hash=%s, n_jobs=%s WHERE portal_id=%s""",
@@ -89,7 +92,7 @@ def page_matches(cur, prof, after=None, limit=50):
     q = dict(prof, limit=limit)
     cond = MATCH
     if after: cond += " AND (j.sort_ts, j.job_key) < (%(a_ts)s, %(a_key)s)"; q.update(a_ts=after[0], a_key=after[1])
-    cur.execute(f"""SELECT j.title,j.url,j.loc,j.sort_ts,j.job_key,j.first_seen FROM bridge_job j
+    cur.execute(f"""SELECT j.title,j.url,j.loc,j.sort_ts,j.job_key,j.first_seen,j.company,j.posted_at FROM bridge_job j
       WHERE {cond} ORDER BY j.sort_ts DESC, j.job_key DESC LIMIT %(limit)s""", q)
     return cur.fetchall()
 

@@ -41,8 +41,9 @@ def page_links(base, html):
             out[u] = t
     return out
 
-def jsonld(html):
-    n = {}
+def jsonld_jobs(html):
+    """JobPosting objects with the fields already in the page: description, datePosted, hiringOrganization, jobLocation. Zero extra fetches."""
+    out = {}
     for m in re.finditer(r"<script[^>]*ld\+json[^>]*>(.*?)</script>", html, re.S | re.I):
         try: d = json.loads(m.group(1))
         except Exception: continue
@@ -52,9 +53,17 @@ def jsonld(html):
             if isinstance(x, list): st += x
             elif isinstance(x, dict):
                 if x.get("@type") == "JobPosting" and x.get("title") and "career" not in str(x["title"]).lower():
-                    n[str(x.get("url") or x["title"])] = x["title"]
+                    loc = x.get("jobLocation"); loc = loc[0] if isinstance(loc, list) and loc else loc
+                    a = (loc or {}).get("address") if isinstance(loc, dict) else None
+                    a = a if isinstance(a, dict) else {}
+                    place = ", ".join(str(a[k]) for k in ("addressLocality", "addressRegion", "addressCountry") if isinstance(a.get(k), str) and a.get(k))
+                    key = str(x.get("url") or x["title"])
+                    out[key] = dict(ext=key, title=x["title"], url=key, loc=place, posted=x.get("datePosted"), description=x.get("description"), company=x.get("hiringOrganization"))
                 st += list(x.get("@graph", []))
-    return n
+    return out
+
+def jsonld(html):
+    return {k: v["title"] for k, v in jsonld_jobs(html).items()}
 
 def sitemap_jobs(base_url):
     """Filtered: >=3 job-path URLs with title words in the slug, >=40% of candidates."""
@@ -138,8 +147,8 @@ def extract(career_url, budget=25.0):
             arg = m.group(0) if m else final
         jobs, st = fetch(ats, arg)
         if jobs: return dict(method="ats:" + ats, ats=ats, ats_token=arg, jobs=jobs, confidence=3)
-    ld = jsonld(html)
-    if ld: return dict(method="jsonld", ats=None, ats_token=None, jobs=[dict(ext=u, title=t, url=u, loc="", posted=None) for u, t in ld.items()], confidence=2)
+    ld = jsonld_jobs(html)
+    if ld: return dict(method="jsonld", ats=None, ats_token=None, jobs=list(ld.values()), confidence=2)
     from . import tiers
     s_ok = s
     for name, fn, conf in (("keka", lambda: {j["url"]: j["title"] for j in tiers.keka(html)}, 3), ("icims", lambda: {j["url"]: j["title"] for j in tiers.icims_host(html, final)}, 3), ("inline_json", lambda: {j["url"] or j["ext"]: j["title"] for j in tiers.tier1_inline(html)}, 2), ("wp_rest", lambda: wp_jobs(final, html), 2), ("rss", lambda: rss_jobs(final, html), 2), ("successfactors", lambda: successfactors(final, html) if re.search(r"/go/[\w-]+/\d+", html) else {}, 3), ("sitemap", lambda: sitemap_jobs(final), 1), ("page_links", lambda: page_links(final, html), 1), ("hidden_api", lambda: {j["url"] or j["ext"]: j["title"] for j in tiers.tier2_api(final, html)[0]}, 1)):
