@@ -4,7 +4,7 @@ on:
     inputs:
       max_batches: { description: "batches per shard (keep small for first runs)", default: "1" }
   schedule:
-    - cron: "17 21 * * *"  # daily 02:47 IST; worker only claims portals that are due
+    - cron: "17 21 */3 * *"  # every 3 days 02:47 IST; worker only claims portals that are due
 concurrency: { group: crawl, cancel-in-progress: false }
 jobs:
   crawl:
