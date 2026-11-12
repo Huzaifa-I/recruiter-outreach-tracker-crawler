@@ -36,9 +36,9 @@ def job_lists(obj, depth=0):
 def tier1_inline(html):
     """__NEXT_DATA__, window.__STATE__ style blobs, <script type=application/json>."""
     blobs = []
-    for m in re.finditer(r"<script[^>]*(?:id=\"__NEXT_DATA__\"|type=\"application/json\")[^>]*>(.*?)</script>", html, re.S | re.I): blobs.append(m.group(1))
-    for m in re.finditer(r"window\.(?:__[A-Z_]+__|\w*[Ss]tate\w*|\w*[Dd]ata\w*)\s*=\s*(\{.*?\});?\s*</script>", html, re.S): blobs.append(m.group(1))
-    for m in re.finditer(r"value=\"(\[\{&quot;.*?\}\])\"", html, re.S): blobs.append(H.unescape(m.group(1)))
+    for m in re.finditer(r"<script[^>]*(?:id=\"__NEXT_DATA__\"|type=\"application/json\")[^>]*>(.{0,2000000}?)</script>", html, re.S | re.I): blobs.append(m.group(1))  # bounded: unbounded lazy dot is quadratic on unclosed tags (f0ccb22 class)
+    for m in re.finditer(r"window\.(?:__[A-Z_]+__|\w*[Ss]tate\w*|\w*[Dd]ata\w*)\s*=\s*(\{.{0,200000}?\});?\s*</script>", html, re.S): blobs.append(m.group(1))  # bounded, same reason
+    for m in re.finditer(r"value=\"(\[\{&quot;.{0,200000}?\}\])\"", html, re.S): blobs.append(H.unescape(m.group(1)))  # bounded, same reason
     for b in blobs:
         try: d = json.loads(b)
         except Exception: continue
