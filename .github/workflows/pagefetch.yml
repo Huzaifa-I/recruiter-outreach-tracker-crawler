@@ -1,0 +1,24 @@
+name: pagefetch
+on:
+  workflow_dispatch:
+    inputs:
+      phase: { description: "1 = matching roles only, 2 = all open jobs", default: "1" }
+      limit: { description: "jobs per shard", default: "750" }
+concurrency: { group: pagefetch, cancel-in-progress: false }
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: { shard: [0, 1, 2, 3] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m jobcrawler.pagefetch --shard ${{ matrix.shard }} --shards 4 --phase ${{ inputs.phase || '1' }} --limit ${{ inputs.limit || '750' }} --max-minutes 30
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CRAWLER_CONTACT: ${{ vars.CRAWLER_CONTACT }}
+          CRAWLER_FETCH_ROLES: ${{ vars.CRAWLER_FETCH_ROLES }}   # comma list of role searches, default "product manager"
