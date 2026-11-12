@@ -3,6 +3,8 @@ import psycopg2, psycopg2.extras
 from . import config
 from .dates import parse_posted
 from .textutil import clean_description, clean_company
+from .classify import exp_range
+from . import roles as roles_mod
 
 def connect():
     if not config.DATABASE_URL: raise SystemExit("DATABASE_URL is not set")
@@ -42,11 +44,13 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
         if k in seen: continue        # same ext twice in one result: keep first (ON CONFLICT cannot touch a row twice)
         seen.add(k)
         c = classify(j["title"], j["loc"])
+        desc = clean_description(j.get("description"))
+        lo, hi = exp_range(j["title"], desc)
         pdt = parse_posted(j.get("posted"), now); sts = pdt or now
-        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], c["exp_min"], res["confidence"], sts, now, now, clean_description(j.get("description")), pdt, clean_company(j.get("company"))))
+        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], lo, res["confidence"], sts, now, now, desc, pdt, clean_company(j.get("company")), hi))
     if rows: psycopg2.extras.execute_values(cur, """
-      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,exp_min,confidence,sort_ts,first_seen,last_seen,description,posted_at,company)
-      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false, exp_min=EXCLUDED.exp_min,
+      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,exp_min,confidence,sort_ts,first_seen,last_seen,description,posted_at,company,exp_max)
+      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false, exp_min=COALESCE(EXCLUDED.exp_min, bridge_job.exp_min), exp_max=COALESCE(EXCLUDED.exp_max, bridge_job.exp_max),
         description=CASE WHEN EXCLUDED.description IS NOT NULL AND EXCLUDED.description IS DISTINCT FROM bridge_job.description THEN EXCLUDED.description ELSE bridge_job.description END,   -- unchanged JD keeps the stored value, no new TOAST copy per crawl
          posted_at=COALESCE(EXCLUDED.posted_at, bridge_job.posted_at), company=COALESCE(EXCLUDED.company, bridge_job.company)""", rows)
     keys = [r[0] for r in rows]
@@ -67,24 +71,19 @@ def save_failure(cur, portal_id, fail):
     back = dt.timedelta(minutes=30 * 2 ** min(fail, 6))
     cur.execute("UPDATE bridge_crawl SET fail_count=fail_count+1, next_check=now()+%s WHERE portal_id=%s", (back, portal_id))
 
-MATCH = """NOT j.closed AND (%(any_role)s OR j.role = ANY(%(role_keys)s) OR j.title ILIKE ANY(%(role_pats)s))
+MATCH = """NOT j.closed AND (%(any_role)s OR j.role = ANY(%(role_keys)s) OR j.title ~* ANY(%(role_pats)s))
   AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
-  AND (j.exp_min IS NULL OR (j.exp_min<=%(exp_max)s))"""
+  AND (j.exp_min IS NULL OR j.exp_min<=%(exp_max)s) AND (j.exp_max IS NULL OR j.exp_max>=%(exp_lo)s)"""
 
-PM_ALIASES = {"pm", "product manager", "product management", "product owner", "apm", "associate product manager", "product"}
-
-def _like(term):
-    t = term.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{t}%"
-
-def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4, any_role=False):
-    """role: one role search term or a list of them (e.g. "product manager", ["data analyst", "pm"]). A search filters to those roles:
-    each term matches job titles containing it; PM terms also use the classified 'pm' role. There is NO all-roles default:
-    empty roles raise ValueError unless any_role=True is passed explicitly (the user picked 'any role')."""
-    roles = [r for r in ([role] if isinstance(role, str) else (role or [])) if r and r.strip()]
-    if not roles and not any_role: raise ValueError("role search required (pass any_role=True only if the user explicitly chose any role)")
-    keys = ["pm"] if any(r.strip().lower() in PM_ALIASES for r in roles) else []
-    return dict(any_role=bool(any_role), role_keys=keys, role_pats=[_like(r) for r in roles], india=int(india), remote=int(remote), senior=allow_senior, exp_max=exp_max)
+def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4, any_role=False, exp_lo=0):
+    """role: one role search term or a list of them. A search filters to those roles, expanded with synonyms (roles.py: "data analyst" also
+    finds "BI analyst"); matching is on whole words in the title. There is NO all-roles default: empty roles raise ValueError unless
+    any_role=True is passed explicitly. Experience: a job is hidden only when it states a minimum above exp_max or a range ending below exp_lo;
+    unknown experience is always shown."""
+    terms = [r for r in ([role] if isinstance(role, str) else (role or [])) if r and r.strip()]
+    if not terms and not any_role: raise ValueError("role search required (pass any_role=True only if the user explicitly chose any role)")
+    keys, pats = roles_mod.expand_many(terms)
+    return dict(any_role=bool(any_role), role_keys=keys, role_pats=pats, india=int(india), remote=int(remote), senior=allow_senior, exp_max=exp_max, exp_lo=exp_lo)
 
 def page_matches(cur, prof, after=None, limit=50):
     """Compute-at-read: newest first, keyset on (sort_ts, job_key). A profile change needs no re-match job,

@@ -15,6 +15,8 @@ Plain functions over a psycopg2 cursor. Wrap them in any route.
 - Newest first by `sort_ts` (the job's posted date when the source gives one, else first crawl time). Keyset pagination on (sort_ts, job_key): no OFFSET, stable while new jobs arrive.
 - A profile change needs no re-match job: the next call uses the new params.
 - Unknown experience (`exp_min` NULL) is shown, never hidden. `exp_min` is only set from explicit title hints ("3+ years", "Fresher").
+- Synonyms: a search is expanded (`roles.py`): "data analyst" also finds BI analyst and business intelligence analyst, "pm" finds product manager roles. Matching is whole words in the title, so short terms like "sde" do not match inside other words. Unknown terms match literally.
+- Experience: pass `exp_max` (jobs stating a minimum above it are hidden) and `exp_lo` (jobs whose stated range ends below it are hidden). Unknown experience is always shown.
 - Role search: `roles` is the role(s) the user searches or has in their profile (string or list). Only those roles are shown: each term matches job titles containing it, and PM terms ("pm", "product manager", ...) also use the classified `pm` role. There is no all-roles default: empty roles raise ValueError (return HTTP 400). `any_role=True` is only for an explicit "any role" choice.
 - Run `sql/006_title_search.sql` for a trigram index on titles (optional, needs pg_trgm, which Neon has).
 - `api.count_new_since(cur, prof, since)` is a badge counter.
@@ -32,3 +34,6 @@ Plain functions over a psycopg2 cursor. Wrap them in any route.
 - Crawl: GitHub Actions on the public crawler repo (daily). `python -m jobcrawler.healthcheck --gate` checks every run.
 - Free-tier limits: Neon 1 GB (about 60 MB at 2,400 portals; check growth with the healthcheck), Actions minutes are free on public repos.
 - No auto-apply anywhere in this code.
+
+## Migrations, in order
+001, 002, 004, 005, 006 (optional), 007 (description, posted_at, company), 008 (exp_max, desc_tried_at, desc_status). Run each before deploying the code that uses it.

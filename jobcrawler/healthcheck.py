@@ -52,6 +52,9 @@ def checks(cur, since_minutes=120, baseline_bytes=None, gate=False):
     slow = q("SELECT count(*) FILTER (WHERE slow_count>0), count(*) FILTER (WHERE last_secs>30) FROM bridge_crawl")[0]
     info.append(f"slow portals: {slow[0]} backed off after timeouts, {slow[1]} last crawl >30s")
     info.append(f"running shards: {running}")
+    if q("SELECT 1 FROM information_schema.columns WHERE table_name='bridge_job' AND column_name='desc_status'"):
+        f = q("SELECT count(*) FILTER (WHERE NOT closed), count(*) FILTER (WHERE NOT closed AND description IS NOT NULL), count(*) FILTER (WHERE NOT closed AND posted_at IS NOT NULL), count(*) FILTER (WHERE NOT closed AND exp_min IS NOT NULL) FROM bridge_job")[0]
+        info.append(f"open jobs {f[0]}: with description {f[1]}, real posted date {f[2]}, experience known {f[3]}")
     # 6. DB growth
     size = q("SELECT pg_database_size(current_database())")[0][0]
     tb = q("SELECT relname, pg_total_relation_size(oid) FROM pg_class WHERE relname IN ('bridge_job','bridge_crawl','bridge_seen','bridge_run') AND relkind='r' ORDER BY 2 DESC")

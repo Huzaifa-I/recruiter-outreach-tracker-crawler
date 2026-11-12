@@ -16,10 +16,10 @@ def decode_cursor(c):
     except Exception:
         raise ValueError("bad cursor")
 
-def profile_from_user(roles, india=True, remote=True, allow_senior=False, exp_max=4, any_role=False):
+def profile_from_user(roles, india=True, remote=True, allow_senior=False, exp_max=4, any_role=False, exp_lo=0):
     """roles: the role(s) the user searches or has in their profile, a string or list. The feed shows only those roles.
     any_role=True is only for an explicit 'any role' choice; without roles and without it, ValueError (never a silent all-roles feed)."""
-    return db.profile_params(roles, india, remote, allow_senior, exp_max, any_role)
+    return db.profile_params(roles, india, remote, allow_senior, exp_max, any_role, exp_lo)
 
 def list_jobs(cur, prof, cursor=None, limit=50):
     """One page of matching open jobs, newest first. Returns {"items": [...], "next_cursor": str|None}."""

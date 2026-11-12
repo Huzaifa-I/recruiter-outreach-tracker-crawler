@@ -1,7 +1,7 @@
 """One function per source. Each returns (jobs, status) where jobs is a list of
 dict(ext, title, url, loc, posted). Only public endpoints are used."""
 import re, json, html as H
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from .http import get, get_json
 
 PATTERNS = [
