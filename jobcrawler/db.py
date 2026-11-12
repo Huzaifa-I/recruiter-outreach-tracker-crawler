@@ -42,10 +42,10 @@ def save_result(cur, portal_id, tier, fail, res, classify, cap):
         seen.add(k)
         c = classify(j["title"], j["loc"])
         sts = parse_posted(j.get("posted"), now) or now
-        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], res["confidence"], sts, now, now))
+        rows.append((k, portal_id, j["title"][:300], j["url"][:1000], (j["loc"] or "")[:200], c["role"], c["level"], c["india"], c["remote"], c["exp_min"], res["confidence"], sts, now, now))
     if rows: psycopg2.extras.execute_values(cur, """
-      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,confidence,sort_ts,first_seen,last_seen)
-      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false""", rows)
+      INSERT INTO bridge_job (job_key,portal_id,title,url,loc,role,level,india,remote,exp_min,confidence,sort_ts,first_seen,last_seen)
+      VALUES %s ON CONFLICT (job_key) DO UPDATE SET last_seen=EXCLUDED.last_seen, closed=false, exp_min=EXCLUDED.exp_min""", rows)
     keys = [r[0] for r in rows]
     cur.execute("UPDATE bridge_job SET closed=true WHERE portal_id=%s AND NOT closed AND job_key <> ALL(%s)", (portal_id, keys))
     cur.execute("""UPDATE bridge_crawl SET ats=%s, ats_token=%s, method=%s, confidence=%s, next_check=%s, fail_count=0, last_ok=%s, job_hash=%s, n_jobs=%s WHERE portal_id=%s""",
@@ -64,7 +64,7 @@ def save_failure(cur, portal_id, fail):
     back = dt.timedelta(minutes=30 * 2 ** min(fail, 6))
     cur.execute("UPDATE bridge_crawl SET fail_count=fail_count+1, next_check=now()+%s WHERE portal_id=%s", (back, portal_id))
 
-MATCH = """NOT j.closed AND j.role=%(role)s AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
+MATCH = """NOT j.closed AND (%(role)s IS NULL OR j.role=%(role)s) AND (j.india>=%(india)s OR j.remote>=%(remote)s) AND (%(senior)s OR j.level<>'senior')
   AND (j.exp_min IS NULL OR (j.exp_min<=%(exp_max)s))"""
 
 def profile_params(role="pm", india=True, remote=True, allow_senior=False, exp_max=4):

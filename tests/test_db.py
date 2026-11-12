@@ -214,3 +214,38 @@ class CapAndHeartbeatTests(unittest.TestCase):
         self.cur.execute("SELECT status, err, updated_at IS NOT NULL FROM bridge_run"); self.assertEqual(self.cur.fetchone(), ("ok", 1, True))
         self.cur.execute("SELECT slow_count FROM bridge_crawl"); self.assertEqual(self.cur.fetchone()[0], 1)
 if __name__ == "__main__": unittest.main()
+
+class ExpTests(unittest.TestCase):
+    def test_exp_hints(self):
+        from jobcrawler.classify import exp_min
+        self.assertEqual([exp_min(t) for t in ("PM (2-4 years)", "PM 3+ yrs", "Fresher Sales", "Intern - Product", "Senior PM", "Engineer", "Room 2024 yearly")], [2.0, 3.0, 0.0, 0.0, None, None, None])
+
+@unittest.skipIf(pgserver is None, "pgserver not installed")
+class ApiDigestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        srv = pgserver.get_server(tempfile.mkdtemp()); cls.uri = srv.get_uri(); cls.c = psycopg2.connect(cls.uri); cls.c.autocommit = True; cls.cur = cls.c.cursor()
+        for f in ("001_bridge.sql", "002_compute_at_read.sql"): cls.cur.execute(open(os.path.join(SQL, f)).read())
+        cls.cur.execute("INSERT INTO bridge_crawl (portal_id,career_url) VALUES (1,'x')")
+        now = dt.datetime.now(dt.timezone.utc)
+        jobs = [dict(ext=str(i), title=("Product Manager (5+ years)" if i == 3 else "Product Manager" if i % 2 else "Engineer"), url=f"u{i}", loc="Bengaluru, India", posted=(now - dt.timedelta(days=i)).isoformat()) for i in range(1, 31)]
+        db.save_result(cls.cur, 1, 2, 0, dict(method="x", confidence=1, jobs=jobs), classify, 100)
+    def test_paging_newest_first_no_repeat_and_exp_filter(self):
+        from jobcrawler import api
+        p = api.profile_from_user(); cur = None; seen = []; ts = []
+        while True:
+            r = api.list_jobs(self.cur, p, cur, 4); seen += [i["job_key"] for i in r["items"]]; ts += [i["posted_at"] for i in r["items"]]; cur = r["next_cursor"]
+            if not cur: break
+        self.assertEqual(len(seen), len(set(seen))); self.assertEqual(ts, sorted(ts, reverse=True))
+        self.assertEqual(len(seen), 14)          # 15 odd PM titles minus the 5+ years one (exp_min 5 > 4)
+        self.assertEqual(len(api.list_jobs(self.cur, api.profile_from_user(all_roles=True), None, 100)["items"]), 29)
+        with self.assertRaises(ValueError): api.list_jobs(self.cur, p, "garbage")
+    def test_digest_marks_seen_only_after_successful_send(self):
+        from jobcrawler import digest
+        p = db.profile_params(); sent = []
+        def bad(u, s, b): raise RuntimeError("channel down")
+        conn = psycopg2.connect(self.uri)
+        with self.assertRaises(RuntimeError): digest.run_for_user(conn, 42, p, bad)
+        n = digest.run_for_user(conn, 42, p, lambda u, s, b: sent.append((s, b)), max_items=10); n2 = digest.run_for_user(conn, 42, p, lambda u, s, b: sent.append(1))
+        self.assertEqual((n, n2, len(sent)), (14, 0, 1)); self.assertIn("14 new matching jobs", sent[0][0]); self.assertIn("4 more in the app", sent[0][1])
+if __name__ == "__main__": unittest.main()
