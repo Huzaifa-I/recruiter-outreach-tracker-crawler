@@ -4,12 +4,32 @@ on:
     inputs:
       max_batches: { description: "batches per shard (keep small for first runs)", default: "1" }
   schedule:
-    - cron: "17 21 */3 * *"  # every 3 days 02:47 IST; worker only claims portals that are due
+    - cron: "17 21 */3 * *"  # every 3 days 02:47 IST; worker only claims portals that are due; parked until 2026-12-01 (guard job)
 concurrency: { group: crawl, cancel-in-progress: false }
 jobs:
-  crawl:
+  guard:
+    # One cheap job that (a) parks scheduled runs until 2026-12-01 and (b) measures the DB size
+    # at run start so the health gate compares growth against a FRESH baseline, never a stale var.
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 2
+    outputs:
+      db_bytes: ${{ steps.base.outputs.db_bytes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install psycopg2-binary
+      - id: park
+        if: github.event_name == 'schedule'
+        run: test "$(date -u +%Y%m%d)" -ge "20261201"   # scheduled runs resume Dec 1, 2026 (user decision 2026-11-12); manual dispatches always pass
+      - id: base
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -c "import os,psycopg2;cur=psycopg2.connect(os.environ['DATABASE_URL']).cursor();cur.execute('SELECT pg_database_size(current_database())');print('db_bytes=%d'%cur.fetchone()[0])" >> "$GITHUB_OUTPUT"
+  crawl:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # budget-fit hard cap: a healthy shard takes <=50 min; a frozen shard dies here instead of burning 110 min
     strategy:
       fail-fast: false
       matrix: { shard: [0, 1, 2, 3] }
@@ -18,7 +38,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
-      - run: python -m jobcrawler.worker --shard ${{ matrix.shard }} --shards 4 --max-batches ${{ inputs.max_batches || 20 }}
+      - run: python -m jobcrawler.worker --shard ${{ matrix.shard }} --shards 4 --max-batches ${{ inputs.max_batches || 12 }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}   # repository secret, never committed
           CRAWLER_CONTACT: ${{ vars.CRAWLER_CONTACT }}
@@ -26,8 +46,8 @@ jobs:
           CRAWLER_THREADS: ${{ vars.CRAWLER_THREADS }}
 
   health:
-    needs: crawl
-    if: always()
+    needs: [guard, crawl]
+    if: ${{ always() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -35,6 +55,6 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
-      - run: python -m jobcrawler.healthcheck --since-minutes 120 --baseline-bytes ${{ vars.CRAWLER_DB_BASELINE }} --gate   # fails the run on any anomaly
+      - run: python -m jobcrawler.healthcheck --since-minutes 120 --baseline-bytes ${{ needs.guard.outputs.db_bytes || vars.CRAWLER_DB_BASELINE }} --gate   # fails the run on any anomaly; baseline measured at run start, var is fallback only
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
